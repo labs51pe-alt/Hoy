@@ -502,6 +502,31 @@ export default function App() {
       newProjectTasks: '',
       newRoutineName: '',
       newRoutineTime: '',
+      subscribers: [
+        {
+          id: 1,
+          name: 'Carlos Mendoza',
+          phone: '+51999888777',
+          city: 'Lima',
+          status: 'pendiente',
+          date: '2026-11-15',
+        },
+        {
+          id: 2,
+          name: 'Ana Sofía Ruiz',
+          phone: '+525551234567',
+          city: 'CDMX',
+          status: 'activo',
+          date: '2026-11-14',
+        },
+      ] as Array<{
+        id: number;
+        name: string;
+        phone: string;
+        city: string;
+        status: 'pendiente' | 'activo';
+        date: string;
+      }>,
       alertsEnabled: false,
       alertsSound: true,
       eveningReviewEnabled: true,
@@ -572,6 +597,9 @@ export default function App() {
                     x: Array.isArray(parsed.rut.x) ? parsed.rut.x : [],
                   }
                 : { d: todayStr, x: [] },
+            subscribers: Array.isArray(parsed.subscribers)
+              ? parsed.subscribers
+              : defaultState.subscribers,
             plannedDays:
               parsed.plannedDays && typeof parsed.plannedDays === 'object'
                 ? parsed.plannedDays
@@ -728,6 +756,27 @@ export default function App() {
   const [orgProjectId, setOrgProjectId] = useState<number | null>(null);
   const [orgPriorityTask, setOrgPriorityTask] = useState('');
   const [orgPriorityTime, setOrgPriorityTime] = useState('');
+
+  // Estados para Inscripción (Hazte socio) y CRM Admin secreto (3 clicks en logo)
+  const [showRegisterModal, setShowRegisterModal] = useState(false);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [showAdminCrmModal, setShowAdminCrmModal] = useState(false);
+  const [adminPinModal, setAdminPinModal] = useState(false);
+  const [adminPinInput, setAdminPinInput] = useState('');
+  const [logoClicks, setLogoClicks] = useState(0);
+
+  const [regName, setRegName] = useState('');
+  const [regCountryCode, setRegCountryCode] = useState('+51');
+  const [regPhoneNum, setRegPhoneNum] = useState('');
+  const [regCity, setRegCity] = useState('');
+
+  // Estados para el flujo de inicio de sesión por WhatsApp OTP al dar Comenzar
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [loginStep, setLoginStep] = useState<'phone' | 'otp'>('phone');
+  const [loginCountryCode, setLoginCountryCode] = useState('+51');
+  const [loginPhoneNum, setLoginPhoneNum] = useState('');
+  const [loginOtpCode, setLoginOtpCode] = useState('');
+  const [simulatedOtp, setSimulatedOtp] = useState('');
 
   const openDayOrganizer = (target: 'today' | 'tomorrow') => {
     const targetDateStr = target === 'tomorrow' ? tomorrowYmd() : ymd(new Date());
@@ -1808,19 +1857,14 @@ export default function App() {
             </motion.div>
           </main>
 
-          {/* Zona inferior limpia: CTA Principal Comenzar (e Instalar App solo si aplica) */}
+          {/* Zona inferior limpia: CTA Principal Comenzar y Hazte socio */}
           <footer className="relative z-10 w-full max-w-sm mx-auto space-y-3">
             <motion.button
               whileTap={{ scale: 0.98 }}
               onClick={() => {
-                setState((prev: any) => ({
-                  ...prev,
-                  view: 'hoy',
-                  hasStarted: true,
-                }));
-                window.scrollTo(0, 0);
+                setShowLoginModal(true);
               }}
-              className={`w-full min-h-[56px] px-6 rounded-2xl font-extrabold text-base flex items-center justify-between transition cursor-pointer shadow-xl border ${
+              className={`w-full min-h-[54px] px-6 rounded-2xl font-extrabold text-base flex items-center justify-between transition cursor-pointer shadow-xl border ${
                 isDark
                   ? 'bg-[#7F8DF2] hover:bg-[#909DF6] text-[#10161B] border-white/20 shadow-black/30'
                   : 'bg-white hover:bg-[#F8FAFC] text-[#3B4CCA] border-white shadow-black/20'
@@ -1836,19 +1880,17 @@ export default function App() {
               </span>
             </motion.button>
 
-            {!isInstalled && (
-              <button
-                onClick={handleInstallAction}
-                className={`w-full min-h-[48px] px-4 rounded-xl border text-sm font-bold flex items-center justify-center gap-2 transition active:scale-[0.98] cursor-pointer whitespace-nowrap ${
-                  isDark
-                    ? 'bg-[#1B262E] border-[#2B3A45] text-[#E7EEF2] hover:border-[#7F8DF2]'
-                    : 'bg-white/12 border-white/25 text-white hover:bg-white/20'
-                }`}
-              >
-                <Download className="w-4 h-4 shrink-0" />
-                <span>Instalar App en tu móvil</span>
-              </button>
-            )}
+            <button
+              onClick={() => setShowRegisterModal(true)}
+              className={`w-full min-h-[48px] px-4 rounded-xl border text-sm font-bold flex items-center justify-center gap-2 transition active:scale-[0.98] cursor-pointer whitespace-nowrap ${
+                isDark
+                  ? 'bg-[#1B262E] border-[#2B3A45] text-[#E7EEF2] hover:border-[#7F8DF2]'
+                  : 'bg-white/12 border-white/25 text-white hover:bg-white/20'
+              }`}
+            >
+              <Zap className="w-4 h-4 text-[#E6B04A] shrink-0" />
+              <span>Hazte socio / Empieza ya</span>
+            </button>
           </footer>
         </motion.div>
       ) : (
@@ -1861,11 +1903,19 @@ export default function App() {
             <div className="max-w-4xl mx-auto h-full px-4 sm:px-6 flex items-center justify-between gap-4">
               <button
                 onClick={() => {
-                  setIntroSplash(false);
-                  setState((prev: any) => ({ ...prev, view: 'welcome' }));
+                  const next = logoClicks + 1;
+                  setLogoClicks(next);
+                  if (next >= 3) {
+                    setLogoClicks(0);
+                    setAdminPinModal(true);
+                  } else {
+                    setIntroSplash(false);
+                    setState((prev: any) => ({ ...prev, view: 'welcome' }));
+                    setTimeout(() => setLogoClicks(0), 1600);
+                  }
                 }}
                 className="flex items-center gap-2.5 cursor-pointer text-left focus:outline-none shrink-0"
-                title="Volver a la portada"
+                title="Volver a la portada (Haz 3 clics rápidos para Admin)"
               >
                 <HoyLogo size="sm" />
                 <span className="font-extrabold text-xl tracking-tight text-[var(--ink)] whitespace-nowrap">
@@ -4489,6 +4539,492 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+      {/* Modal Formulario de Inscripción ("Hazte socio") */}
+      {showRegisterModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-md rounded-3xl bg-[var(--card)] text-[var(--ink)] p-6 sm:p-7 shadow-2xl border border-[var(--line)] space-y-5"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <span className="text-xs font-extrabold uppercase text-[var(--acc)] tracking-wider">
+                  Membresía HOY
+                </span>
+                <h3 className="text-xl font-extrabold tracking-tight mt-0.5">
+                  Únete a HOY
+                </h3>
+                <p className="text-xs text-[var(--mute)] mt-1">
+                  Completa tus datos para recibir las instrucciones de acceso por WhatsApp.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowRegisterModal(false)}
+                aria-label="Cerrar"
+                className="min-h-[36px] min-w-[36px] rounded-xl text-[var(--mute)] hover:text-[var(--ink)] flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-[var(--mute)] mb-1">
+                  Nombre completo
+                </label>
+                <input
+                  type="text"
+                  value={regName}
+                  onChange={(e) => setRegName(e.target.value)}
+                  placeholder="Ej: Sofía Valenzuela"
+                  className="w-full min-h-[52px] px-4 font-extrabold text-sm sm:text-base bg-[var(--bg)] border-2 border-[var(--line)] focus:border-[var(--acc)] focus:ring-2 focus:ring-[var(--acc)]/25 rounded-2xl shadow-sm outline-none transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-[var(--mute)] mb-1.5">
+                  Número de WhatsApp
+                </label>
+                <div className="flex gap-2.5">
+                  <select
+                    value={regCountryCode}
+                    onChange={(e) => setRegCountryCode(e.target.value)}
+                    className="w-32 min-h-[52px] px-3 text-center font-extrabold text-xs sm:text-sm shrink-0 bg-[var(--bg)] border-2 border-[var(--line)] focus:border-[var(--acc)] focus:ring-2 focus:ring-[var(--acc)]/25 rounded-2xl shadow-sm outline-none cursor-pointer transition"
+                  >
+                    <option value="+51">🇵🇪 +51</option>
+                    <option value="+52">🇲🇽 +52</option>
+                    <option value="+57">🇨🇴 +57</option>
+                    <option value="+54">🇦🇷 +54</option>
+                    <option value="+34">🇪🇸 +34</option>
+                    <option value="+1">🇺🇸 +1</option>
+                    <option value="+56">🇨🇱 +56</option>
+                  </select>
+                  <input
+                    type="tel"
+                    value={regPhoneNum}
+                    onChange={(e) => setRegPhoneNum(e.target.value)}
+                    placeholder="999 888 777"
+                    className="flex-1 min-h-[52px] px-4 font-extrabold text-sm sm:text-base bg-[var(--bg)] border-2 border-[var(--line)] focus:border-[var(--acc)] focus:ring-2 focus:ring-[var(--acc)]/25 rounded-2xl shadow-sm outline-none transition"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-[var(--mute)] mb-1.5">
+                  Ciudad y País
+                </label>
+                <input
+                  type="text"
+                  value={regCity}
+                  onChange={(e) => setRegCity(e.target.value)}
+                  placeholder="Ej: Lima, Perú"
+                  className="w-full min-h-[52px] px-4 font-extrabold text-sm sm:text-base bg-[var(--bg)] border-2 border-[var(--line)] focus:border-[var(--acc)] focus:ring-2 focus:ring-[var(--acc)]/25 rounded-2xl shadow-sm outline-none transition"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2.5 pt-2">
+              <button
+                onClick={() => {
+                  const name = regName.trim();
+                  const phoneNumClean = regPhoneNum.trim();
+                  const city = regCity.trim();
+                  if (!name || !phoneNumClean) {
+                    say('Por favor ingresa tu nombre y teléfono.');
+                    return;
+                  }
+
+                  const phone = `${regCountryCode} ${phoneNumClean}`;
+                  const newSub = {
+                    id: Date.now(),
+                    name,
+                    phone,
+                    city: city || 'No especificada',
+                    status: 'pendiente' as const,
+                    date: ymd(new Date()),
+                  };
+
+                  setState((prev: any) => ({
+                    ...prev,
+                    subscribers: [newSub, ...(prev.subscribers || [])],
+                  }));
+
+                  setShowRegisterModal(false);
+                  setRegName('');
+                  setRegCountryCode('+51');
+                  setRegPhoneNum('');
+                  setRegCity('');
+                  setShowPaymentModal(true);
+                }}
+                className="flex-1 min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-xl cursor-pointer hover:opacity-95 transition"
+              >
+                Enviar y ver pago por WhatsApp
+              </button>
+              <button
+                onClick={() => setShowRegisterModal(false)}
+                className="min-h-[48px] px-4 border border-[var(--line)] font-bold text-sm rounded-xl hover:border-[var(--acc)] cursor-pointer transition"
+              >
+                Cancelar
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Modal Información de Pago */}
+      {showPaymentModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-md rounded-3xl bg-[var(--card)] text-[var(--ink)] p-6 sm:p-7 shadow-2xl border border-[var(--line)] space-y-5"
+          >
+            <div className="flex items-start gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-[var(--ok)]/15 text-[var(--ok)] flex items-center justify-center shrink-0">
+                <CheckCircle2 className="w-6 h-6" />
+              </div>
+              <div>
+                <span className="text-xs font-extrabold uppercase text-[var(--ok)] tracking-wider">
+                  ¡Registro exitoso!
+                </span>
+                <h3 className="text-lg font-extrabold tracking-tight mt-0.5">
+                  Instrucciones de pago
+                </h3>
+                <p className="text-xs text-[var(--mute)] mt-1 leading-relaxed">
+                  Te hemos enviado los detalles a tu WhatsApp (simulado). Realiza tu pago mediante los siguientes métodos:
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-[var(--line)] bg-[var(--bg)] p-4 space-y-2 text-xs">
+              <p className="font-bold text-[var(--ink)]">💳 Yape / Plin / Transferencia:</p>
+              <p className="font-mono font-bold text-[var(--acc)]">+51 999 888 777 (Titular: HOY App)</p>
+              <p className="font-bold text-[var(--ink)] pt-1">💵 Monto:</p>
+              <p className="font-bold text-[var(--ink)]">$19.00 USD / S/ 75.00 PEN (Acceso Vitalicio)</p>
+            </div>
+
+            <p className="text-[11px] text-[var(--mute)] italic">
+              * Una vez realizado el pago, envíanos tu comprobante y el administrador activará tu acceso a tu WhatsApp.
+            </p>
+
+            <button
+              onClick={() => setShowPaymentModal(false)}
+              className="w-full min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-bold text-sm rounded-xl cursor-pointer hover:opacity-95 transition"
+            >
+              Entendido, volver a la app
+            </button>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Modal PIN de Admin para CRM */}
+      {adminPinModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-xs rounded-3xl bg-[var(--card)] text-[var(--ink)] p-6 shadow-2xl border border-[var(--line)] space-y-4 text-center"
+          >
+            <h3 className="text-base font-extrabold tracking-tight">
+              Acceso Administrador CRM
+            </h3>
+            <p className="text-xs text-[var(--mute)]">
+              Ingresa tu clave maestra (PIN: 1892)
+            </p>
+            <input
+              type="password"
+              value={adminPinInput}
+              onChange={(e) => setAdminPinInput(e.target.value)}
+              placeholder="••••"
+              className="text-center font-extrabold text-xl tracking-widest w-full min-h-[48px] bg-[var(--bg)] border-2 border-[var(--line)] focus:border-[var(--acc)] rounded-2xl shadow-sm outline-none"
+              autoFocus
+            />
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={() => {
+                  if (adminPinInput === '1892') {
+                    setAdminPinModal(false);
+                    setAdminPinInput('');
+                    setShowAdminCrmModal(true);
+                  } else {
+                    say('Clave incorrecta.');
+                  }
+                }}
+                className="flex-1 min-h-[44px] bg-[var(--acc)] text-[var(--accink)] font-bold text-xs rounded-xl cursor-pointer"
+              >
+                Entrar
+              </button>
+              <button
+                onClick={() => {
+                  setAdminPinModal(false);
+                  setAdminPinInput('');
+                }}
+                className="min-h-[44px] px-4 border border-[var(--line)] text-xs font-bold rounded-xl cursor-pointer"
+              >
+                Cancelar
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* CRM Panel Administrativo */}
+      {showAdminCrmModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-3xl rounded-3xl bg-[var(--card)] text-[var(--ink)] p-6 sm:p-7 shadow-2xl border border-[var(--line)] max-h-[90vh] overflow-y-auto space-y-5"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <span className="text-xs font-extrabold uppercase text-[var(--acc)] tracking-wider">
+                  Panel Admin CRM
+                </span>
+                <h3 className="text-xl font-extrabold tracking-tight">
+                  Gestión de Socios e Inscripciones
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowAdminCrmModal(false)}
+                aria-label="Cerrar"
+                className="min-h-[36px] min-w-[36px] rounded-xl text-[var(--mute)] hover:text-[var(--ink)] flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-[var(--line)] text-[var(--mute)]">
+                    <th className="pb-3 font-bold">Cliente</th>
+                    <th className="pb-3 font-bold">WhatsApp</th>
+                    <th className="pb-3 font-bold">Ciudad</th>
+                    <th className="pb-3 font-bold">Estado</th>
+                    <th className="pb-3 font-bold text-right">Acción</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--line)]">
+                  {Array.isArray(state.subscribers) &&
+                  state.subscribers.length > 0 ? (
+                    state.subscribers.map((sub: any) => (
+                      <tr key={sub.id} className="hover:bg-[var(--bg)]/50">
+                        <td className="py-3.5 font-bold">{sub.name}</td>
+                        <td className="py-3.5 font-mono">{sub.phone}</td>
+                        <td className="py-3.5 text-[var(--mute)]">{sub.city}</td>
+                        <td className="py-3.5">
+                          <span
+                            className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold ${
+                              sub.status === 'activo'
+                                ? 'bg-[var(--ok)]/15 text-[var(--ok)]'
+                                : 'bg-amber-500/15 text-amber-500'
+                            }`}
+                          >
+                            {sub.status.toUpperCase()}
+                          </span>
+                        </td>
+                        <td className="py-3.5 text-right">
+                          {sub.status === 'pendiente' ? (
+                            <button
+                              onClick={() => {
+                                setState((prev: any) => ({
+                                  ...prev,
+                                  subscribers: (prev.subscribers || []).map(
+                                    (s: any) =>
+                                      s.id === sub.id
+                                        ? { ...s, status: 'activo' }
+                                        : s
+                                  ),
+                                }));
+                                say(`¡Acceso aprobado para ${sub.name}! (WhatsApp disparado)`);
+                              }}
+                              className="px-3 py-1.5 bg-[var(--acc)] text-[var(--accink)] font-bold rounded-lg hover:opacity-95 transition cursor-pointer text-[11px]"
+                            >
+                              Aprobar y Enviar WhatsApp
+                            </button>
+                          ) : (
+                            <span className="text-[var(--ok)] font-bold">
+                              Aprobado ✓
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={5} className="py-6 text-center text-[var(--mute)]">
+                        No hay inscripciones registradas.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <button
+              onClick={() => setShowAdminCrmModal(false)}
+              className="w-full min-h-[46px] bg-[var(--bg)] border border-[var(--line)] font-bold text-sm rounded-xl cursor-pointer hover:border-[var(--acc)] transition"
+            >
+              Cerrar CRM
+            </button>
+          </motion.div>
+        </div>
+      )}
+      {/* Modal de Inicio de Sesión / OTP por WhatsApp al dar Comenzar */}
+      {showLoginModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-md rounded-3xl bg-[var(--card)] text-[var(--ink)] p-6 sm:p-7 shadow-2xl border border-[var(--line)] space-y-5"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-[var(--acc)]/15 text-[var(--acc)] flex items-center justify-center shrink-0">
+                  <Smartphone className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-extrabold tracking-tight">
+                    {loginStep === 'phone' ? 'Ingresa tu WhatsApp' : 'Verifica tu código'}
+                  </h3>
+                  <p className="text-xs text-[var(--mute)] mt-0.5">
+                    {loginStep === 'phone'
+                      ? 'Te enviaremos un código OTP instantáneo por WhatsApp.'
+                      : `Código enviado a ${loginCountryCode} ${loginPhoneNum}`}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowLoginModal(false);
+                  setLoginStep('phone');
+                  setLoginPhoneNum('');
+                  setLoginOtpCode('');
+                }}
+                aria-label="Cerrar"
+                className="min-h-[36px] min-w-[36px] rounded-xl text-[var(--mute)] hover:text-[var(--ink)] flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {loginStep === 'phone' ? (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-[var(--mute)] mb-1.5">
+                    Número de teléfono móvil
+                  </label>
+                  <div className="flex gap-2.5">
+                    <select
+                      value={loginCountryCode}
+                      onChange={(e) => setLoginCountryCode(e.target.value)}
+                      className="w-32 min-h-[52px] px-3 text-center font-extrabold text-xs sm:text-sm shrink-0 bg-[var(--bg)] border-2 border-[var(--line)] focus:border-[var(--acc)] focus:ring-2 focus:ring-[var(--acc)]/25 rounded-2xl shadow-sm outline-none cursor-pointer transition"
+                    >
+                      <option value="+51">🇵🇪 +51</option>
+                      <option value="+52">🇲🇽 +52</option>
+                      <option value="+57">🇨🇴 +57</option>
+                      <option value="+54">🇦🇷 +54</option>
+                      <option value="+34">🇪🇸 +34</option>
+                      <option value="+1">🇺🇸 +1</option>
+                      <option value="+56">🇨🇱 +56</option>
+                    </select>
+                    <input
+                      type="tel"
+                      value={loginPhoneNum}
+                      onChange={(e) => setLoginPhoneNum(e.target.value)}
+                      placeholder="999 888 777"
+                      className="flex-1 min-h-[52px] px-4 font-extrabold text-sm sm:text-base bg-[var(--bg)] border-2 border-[var(--line)] focus:border-[var(--acc)] focus:ring-2 focus:ring-[var(--acc)]/25 rounded-2xl shadow-sm outline-none transition"
+                      autoFocus
+                    />
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => {
+                    const phoneClean = loginPhoneNum.trim();
+                    if (!phoneClean || phoneClean.length < 6) {
+                      say('Ingresa un número de teléfono válido.');
+                      return;
+                    }
+                    const fullPhone = `${loginCountryCode} ${phoneClean}`;
+                    const foundSub = (state.subscribers || []).find(
+                      (s: any) =>
+                        s.phone.replace(/\s+/g, '') === fullPhone.replace(/\s+/g, '')
+                    );
+
+                    if (foundSub && foundSub.status === 'pendiente') {
+                      say('Tu pago está pendiente de aprobación por el administrador.');
+                      return;
+                    }
+
+                    const generated = String(Math.floor(100000 + Math.random() * 900000));
+                    setSimulatedOtp(generated);
+                    setLoginStep('otp');
+                    say(`(Simulación Evolution API) Código OTP enviado por WhatsApp: ${generated}`);
+                  }}
+                  className="w-full min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-xl cursor-pointer hover:opacity-95 transition"
+                >
+                  Enviar código por WhatsApp
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-[var(--mute)] mb-1.5">
+                    Código de 6 dígitos recibido por WhatsApp
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    value={loginOtpCode}
+                    onChange={(e) => setLoginOtpCode(e.target.value)}
+                    placeholder="123456"
+                    className="text-center font-bold text-xl tracking-widest tabular-nums"
+                    autoFocus
+                  />
+                  <p className="text-[11px] text-[var(--mute)] mt-1.5 text-center">
+                    (Simulación: el código enviado es <strong className="text-[var(--acc)]">{simulatedOtp}</strong>)
+                  </p>
+                </div>
+
+                <div className="flex gap-2.5">
+                  <button
+                    onClick={() => {
+                      if (loginOtpCode.trim() !== simulatedOtp) {
+                        say('Código OTP incorrecto.');
+                        return;
+                      }
+
+                      setShowLoginModal(false);
+                      setLoginStep('phone');
+                      setLoginPhoneNum('');
+                      setLoginOtpCode('');
+                      setState((prev: any) => ({
+                        ...prev,
+                        view: 'hoy',
+                        hasStarted: true,
+                      }));
+                      window.scrollTo(0, 0);
+                      say('¡Bienvenido! Perfil cargado correctamente.');
+                    }}
+                    className="flex-1 min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-xl cursor-pointer hover:opacity-95 transition"
+                  >
+                    Verificar e ingresar
+                  </button>
+                  <button
+                    onClick={() => setLoginStep('phone')}
+                    className="min-h-[48px] px-4 border border-[var(--line)] font-bold text-xs rounded-xl cursor-pointer hover:border-[var(--acc)] transition"
+                  >
+                    Reenviar
+                  </button>
+                </div>
+              </div>
+            )}
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }
