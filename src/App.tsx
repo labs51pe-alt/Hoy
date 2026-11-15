@@ -39,7 +39,13 @@ import {
   Smartphone,
   Zap,
   Calendar,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
+import AdminCrmModal, {
+  SubscriberPlan,
+  SubscriberRecord,
+} from './components/AdminCrmModal';
 
 // ==========================================
 // CONFIGURACIÓN DE SUPABASE Y CONSTANTES
@@ -506,27 +512,113 @@ export default function App() {
         {
           id: 1,
           name: 'Carlos Mendoza',
-          phone: '+51999888777',
-          city: 'Lima',
+          phone: '+51 999 888 777',
+          city: 'Lima, Perú',
           status: 'pendiente',
-          date: '2026-11-15',
+          plan: 'Vitalicio',
+          amount: 75,
+          paymentMethod: 'Yape',
+          paymentStatus: 'pendiente',
+          date: back(0),
+          payments: [],
         },
         {
           id: 2,
           name: 'Ana Sofía Ruiz',
-          phone: '+525551234567',
-          city: 'CDMX',
+          phone: '+52 555 123 4567',
+          city: 'CDMX, México',
           status: 'activo',
-          date: '2026-11-14',
+          plan: 'Vitalicio',
+          amount: 75,
+          paymentMethod: 'Tarjeta',
+          paymentStatus: 'pagado',
+          paymentRef: 'STR-8410',
+          date: back(1),
+          approvedAt: back(1),
+          payments: [
+            {
+              id: 201,
+              date: back(1),
+              amount: 75,
+              method: 'Tarjeta',
+              ref: 'STR-8410',
+              note: 'Membresía Vitalicio',
+            },
+          ],
         },
-      ] as Array<{
-        id: number;
-        name: string;
-        phone: string;
-        city: string;
-        status: 'pendiente' | 'activo';
-        date: string;
-      }>,
+        {
+          id: 3,
+          name: 'Mateo Vargas',
+          phone: '+57 310 442 1900',
+          city: 'Bogotá, Colombia',
+          status: 'activo',
+          plan: 'Trimestral',
+          amount: 55,
+          paymentMethod: 'Transferencia',
+          paymentStatus: 'pagado',
+          paymentRef: 'TRF-2911',
+          date: back(2),
+          approvedAt: back(2),
+          payments: [
+            {
+              id: 301,
+              date: back(2),
+              amount: 55,
+              method: 'Transferencia',
+              ref: 'TRF-2911',
+              note: 'Plan Trimestral',
+            },
+          ],
+        },
+        {
+          id: 4,
+          name: 'Lucía Paredes',
+          phone: '+51 987 654 321',
+          city: 'Arequipa, Perú',
+          status: 'activo',
+          plan: 'Vitalicio',
+          amount: 75,
+          paymentMethod: 'Plin',
+          paymentStatus: 'pagado',
+          paymentRef: 'PLN-4402',
+          date: back(4),
+          approvedAt: back(4),
+          payments: [
+            {
+              id: 401,
+              date: back(4),
+              amount: 75,
+              method: 'Plin',
+              ref: 'PLN-4402',
+              note: 'Membresía Vitalicio',
+            },
+          ],
+        },
+        {
+          id: 5,
+          name: 'Diego Torres',
+          phone: '+54 11 5520 8812',
+          city: 'Buenos Aires, Argentina',
+          status: 'pausado',
+          plan: 'Mensual',
+          amount: 25,
+          paymentMethod: 'Tarjeta',
+          paymentStatus: 'pagado',
+          paymentRef: 'MP-7731',
+          date: back(5),
+          approvedAt: back(5),
+          payments: [
+            {
+              id: 501,
+              date: back(5),
+              amount: 25,
+              method: 'Tarjeta',
+              ref: 'MP-7731',
+              note: 'Primer mes',
+            },
+          ],
+        },
+      ] as SubscriberRecord[],
       alertsEnabled: false,
       alertsSound: true,
       eveningReviewEnabled: true,
@@ -763,12 +855,59 @@ export default function App() {
   const [showAdminCrmModal, setShowAdminCrmModal] = useState(false);
   const [adminPinModal, setAdminPinModal] = useState(false);
   const [adminPinInput, setAdminPinInput] = useState('');
+  const [adminPinError, setAdminPinError] = useState('');
+  const [showAdminPin, setShowAdminPin] = useState(false);
   const [logoClicks, setLogoClicks] = useState(0);
+  const logoClickTimerRef = useRef<any>(null);
+  const navWelcomeTimerRef = useRef<any>(null);
+
+  const handleAdminPinSubmit = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (adminPinInput.trim() === '1982') {
+      setAdminPinModal(false);
+      setAdminPinInput('');
+      setAdminPinError('');
+      setShowAdminPin(false);
+      setShowAdminCrmModal(true);
+    } else {
+      setAdminPinError('Clave incorrecta. Intenta de nuevo.');
+      say('Clave incorrecta.');
+    }
+  };
+
+  const handleSecretAdminTap = (fromInnerHeader = false) => {
+    if (logoClickTimerRef.current) clearTimeout(logoClickTimerRef.current);
+    if (navWelcomeTimerRef.current) clearTimeout(navWelcomeTimerRef.current);
+
+    const next = logoClicks + 1;
+    if (next >= 3) {
+      setLogoClicks(0);
+      setAdminPinModal(true);
+      return;
+    }
+
+    setLogoClicks(next);
+    logoClickTimerRef.current = setTimeout(() => {
+      setLogoClicks(0);
+    }, 1500);
+
+    if (fromInnerHeader) {
+      navWelcomeTimerRef.current = setTimeout(() => {
+        setIntroSplash(false);
+        setState((prev: any) => ({ ...prev, view: 'welcome' }));
+      }, 320);
+    }
+  };
 
   const [regName, setRegName] = useState('');
   const [regCountryCode, setRegCountryCode] = useState('+51');
   const [regPhoneNum, setRegPhoneNum] = useState('');
   const [regCity, setRegCity] = useState('');
+  const [regPlan, setRegPlan] = useState<SubscriberPlan>('Vitalicio');
+  const [lastRegSummary, setLastRegSummary] = useState<{
+    plan: SubscriberPlan;
+    amount: number;
+  }>({ plan: 'Vitalicio', amount: 75 });
 
   // Estados para el flujo de inicio de sesión por WhatsApp OTP al dar Comenzar
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -1683,16 +1822,24 @@ export default function App() {
 
           {/* Núcleo Visual Central: Emblema + Marca HOY + Gráfico Cinético */}
           <main className="relative z-10 w-full max-w-md mx-auto my-auto py-3 sm:py-6 flex flex-col items-center text-center">
-            {/* Dial cinético de carga / enfoque diario */}
+            {/* Dial cinético de carga / enfoque diario (3 clics en H para Admin) */}
             <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
+              whileTap={{ scale: 0.96 }}
               transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
-              className="relative flex items-center justify-center w-28 h-28 sm:w-36 sm:h-36 mb-3.5 sm:mb-5"
+              onClick={() => handleSecretAdminTap(false)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') handleSecretAdminTap(false);
+              }}
+              aria-label="Logotipo HOY"
+              className="relative flex items-center justify-center w-28 h-28 sm:w-36 sm:h-36 mb-3.5 sm:mb-5 cursor-pointer select-none focus:outline-none"
             >
               <motion.svg
                 viewBox="0 0 144 144"
-                className="absolute inset-0 w-full h-full"
+                className="pointer-events-none absolute inset-0 w-full h-full"
                 animate={{ rotate: 360 }}
                 transition={{ duration: 16, repeat: Infinity, ease: 'linear' }}
               >
@@ -1709,7 +1856,7 @@ export default function App() {
 
               <motion.svg
                 viewBox="0 0 144 144"
-                className="absolute inset-0 w-full h-full -rotate-90"
+                className="pointer-events-none absolute inset-0 w-full h-full -rotate-90"
               >
                 <motion.circle
                   cx="72"
@@ -1726,7 +1873,9 @@ export default function App() {
                 />
               </motion.svg>
 
-              <HoyLogo size="lg" variant={isDark ? 'accent' : 'light'} />
+              <div className="relative z-10">
+                <HoyLogo size="lg" variant={isDark ? 'accent' : 'light'} />
+              </div>
             </motion.div>
 
             {/* Título principal */}
@@ -1902,20 +2051,9 @@ export default function App() {
           <header className="sticky top-0 z-40 h-16 backdrop-blur-xl bg-[var(--bg)]/85 border-b border-[var(--line)]">
             <div className="max-w-4xl mx-auto h-full px-4 sm:px-6 flex items-center justify-between gap-4">
               <button
-                onClick={() => {
-                  const next = logoClicks + 1;
-                  setLogoClicks(next);
-                  if (next >= 3) {
-                    setLogoClicks(0);
-                    setAdminPinModal(true);
-                  } else {
-                    setIntroSplash(false);
-                    setState((prev: any) => ({ ...prev, view: 'welcome' }));
-                    setTimeout(() => setLogoClicks(0), 1600);
-                  }
-                }}
+                onClick={() => handleSecretAdminTap(true)}
                 className="flex items-center gap-2.5 cursor-pointer text-left focus:outline-none shrink-0"
-                title="Volver a la portada (Haz 3 clics rápidos para Admin)"
+                title="Volver a la portada (3 clics rápidos para Admin)"
               >
                 <HoyLogo size="sm" />
                 <span className="font-extrabold text-xl tracking-tight text-[var(--ink)] whitespace-nowrap">
@@ -3811,7 +3949,7 @@ export default function App() {
             initial={{ opacity: 0, y: 16, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 8, scale: 0.96 }}
-            className="fixed left-4 right-4 bottom-24 max-w-md mx-auto bg-[var(--ink)] text-[var(--bg)] px-4 py-3.5 rounded-2xl text-xs font-bold z-50 shadow-2xl flex items-center gap-3 border border-[var(--line)]/20"
+            className="fixed left-4 right-4 bottom-24 max-w-md mx-auto bg-[var(--ink)] text-[var(--bg)] px-4 py-3.5 rounded-2xl text-xs font-bold z-[100] shadow-2xl flex items-center gap-3 border border-[var(--line)]/20"
           >
             <CheckCircle2 className="w-4 h-4 text-[var(--ok)] shrink-0" />
             <span className="flex-1">{toastMessage}</span>
@@ -4622,6 +4760,37 @@ export default function App() {
                   className="w-full min-h-[52px] px-4 font-extrabold text-sm sm:text-base bg-[var(--bg)] border-2 border-[var(--line)] focus:border-[var(--acc)] focus:ring-2 focus:ring-[var(--acc)]/25 rounded-2xl shadow-sm outline-none transition"
                 />
               </div>
+
+              <div>
+                <label className="block text-xs font-bold text-[var(--mute)] mb-1.5">
+                  Plan de membresía
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {(
+                    [
+                      ['Vitalicio', 'S/ 75'],
+                      ['Trimestral', 'S/ 55'],
+                      ['Mensual', 'S/ 25'],
+                    ] as const
+                  ).map(([planName, priceLabel]) => (
+                    <button
+                      key={planName}
+                      type="button"
+                      onClick={() => setRegPlan(planName)}
+                      className={`min-h-[48px] px-2 py-2 rounded-2xl border-2 text-center transition cursor-pointer ${
+                        regPlan === planName
+                          ? 'border-[var(--acc)] bg-[var(--acc)]/12 text-[var(--ink)]'
+                          : 'border-[var(--line)] bg-[var(--bg)] text-[var(--mute)] hover:text-[var(--ink)]'
+                      }`}
+                    >
+                      <div className="text-xs font-extrabold">{planName}</div>
+                      <div className="text-[11px] font-mono font-bold tabular-nums">
+                        {priceLabel}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
             <div className="flex gap-2.5 pt-2">
@@ -4635,14 +4804,21 @@ export default function App() {
                     return;
                   }
 
+                  const planAmount =
+                    regPlan === 'Vitalicio' ? 75 : regPlan === 'Trimestral' ? 55 : 25;
                   const phone = `${regCountryCode} ${phoneNumClean}`;
-                  const newSub = {
+                  const newSub: SubscriberRecord = {
                     id: Date.now(),
                     name,
                     phone,
                     city: city || 'No especificada',
-                    status: 'pendiente' as const,
+                    status: 'pendiente',
+                    plan: regPlan,
+                    amount: planAmount,
+                    paymentMethod: 'Por definir',
+                    paymentStatus: 'pendiente',
                     date: ymd(new Date()),
+                    payments: [],
                   };
 
                   setState((prev: any) => ({
@@ -4650,11 +4826,13 @@ export default function App() {
                     subscribers: [newSub, ...(prev.subscribers || [])],
                   }));
 
+                  setLastRegSummary({ plan: regPlan, amount: planAmount });
                   setShowRegisterModal(false);
                   setRegName('');
                   setRegCountryCode('+51');
                   setRegPhoneNum('');
                   setRegCity('');
+                  setRegPlan('Vitalicio');
                   setShowPaymentModal(true);
                 }}
                 className="flex-1 min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-xl cursor-pointer hover:opacity-95 transition"
@@ -4701,7 +4879,9 @@ export default function App() {
               <p className="font-bold text-[var(--ink)]">💳 Yape / Plin / Transferencia:</p>
               <p className="font-mono font-bold text-[var(--acc)]">+51 999 888 777 (Titular: HOY App)</p>
               <p className="font-bold text-[var(--ink)] pt-1">💵 Monto:</p>
-              <p className="font-bold text-[var(--ink)]">$19.00 USD / S/ 75.00 PEN (Acceso Vitalicio)</p>
+              <p className="font-bold text-[var(--ink)]">
+                S/ {lastRegSummary.amount.toFixed(2)} PEN (Plan {lastRegSummary.plan})
+              </p>
             </div>
 
             <p className="text-[11px] text-[var(--mute)] italic">
@@ -4720,7 +4900,7 @@ export default function App() {
 
       {/* Modal PIN de Admin para CRM */}
       {adminPinModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <motion.div
             initial={{ opacity: 0, scale: 0.96 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -4730,147 +4910,71 @@ export default function App() {
               Acceso Administrador CRM
             </h3>
             <p className="text-xs text-[var(--mute)]">
-              Ingresa tu clave maestra (PIN: 1892)
+              Ingresa tu clave maestra para acceder al panel
             </p>
-            <input
-              type="password"
-              value={adminPinInput}
-              onChange={(e) => setAdminPinInput(e.target.value)}
-              placeholder="••••"
-              className="text-center font-extrabold text-xl tracking-widest w-full min-h-[48px] bg-[var(--bg)] border-2 border-[var(--line)] focus:border-[var(--acc)] rounded-2xl shadow-sm outline-none"
-              autoFocus
-            />
-            <div className="flex gap-2 pt-1">
-              <button
-                onClick={() => {
-                  if (adminPinInput === '1892') {
+            <form onSubmit={handleAdminPinSubmit} className="space-y-3">
+              <div className="relative">
+                <input
+                  type={showAdminPin ? 'text' : 'password'}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  value={adminPinInput}
+                  onChange={(e) => {
+                    setAdminPinInput(e.target.value);
+                    if (adminPinError) setAdminPinError('');
+                  }}
+                  placeholder="••••"
+                  className="text-center font-extrabold text-xl tracking-widest w-full min-h-[48px] px-10 bg-[var(--bg)] border-2 border-[var(--line)] focus:border-[var(--acc)] rounded-2xl shadow-sm outline-none"
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowAdminPin((v) => !v)}
+                  aria-label={showAdminPin ? 'Ocultar clave' : 'Ver clave'}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 min-h-[36px] min-w-[36px] flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] cursor-pointer"
+                >
+                  {showAdminPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {adminPinError && (
+                <p className="text-xs font-bold text-red-500">{adminPinError}</p>
+              )}
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="submit"
+                  className="flex-1 min-h-[44px] bg-[var(--acc)] text-[var(--accink)] font-bold text-xs rounded-xl cursor-pointer hover:opacity-95 transition"
+                >
+                  Entrar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
                     setAdminPinModal(false);
                     setAdminPinInput('');
-                    setShowAdminCrmModal(true);
-                  } else {
-                    say('Clave incorrecta.');
-                  }
-                }}
-                className="flex-1 min-h-[44px] bg-[var(--acc)] text-[var(--accink)] font-bold text-xs rounded-xl cursor-pointer"
-              >
-                Entrar
-              </button>
-              <button
-                onClick={() => {
-                  setAdminPinModal(false);
-                  setAdminPinInput('');
-                }}
-                className="min-h-[44px] px-4 border border-[var(--line)] text-xs font-bold rounded-xl cursor-pointer"
-              >
-                Cancelar
-              </button>
-            </div>
+                    setAdminPinError('');
+                    setShowAdminPin(false);
+                  }}
+                  className="min-h-[44px] px-4 border border-[var(--line)] text-xs font-bold rounded-xl cursor-pointer hover:border-[var(--acc)] transition"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </form>
           </motion.div>
         </div>
       )}
 
-      {/* CRM Panel Administrativo */}
+      {/* CRM Panel Administrativo Interactivo */}
       {showAdminCrmModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.96 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="w-full max-w-3xl rounded-3xl bg-[var(--card)] text-[var(--ink)] p-6 sm:p-7 shadow-2xl border border-[var(--line)] max-h-[90vh] overflow-y-auto space-y-5"
-          >
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <span className="text-xs font-extrabold uppercase text-[var(--acc)] tracking-wider">
-                  Panel Admin CRM
-                </span>
-                <h3 className="text-xl font-extrabold tracking-tight">
-                  Gestión de Socios e Inscripciones
-                </h3>
-              </div>
-              <button
-                onClick={() => setShowAdminCrmModal(false)}
-                aria-label="Cerrar"
-                className="min-h-[36px] min-w-[36px] rounded-xl text-[var(--mute)] hover:text-[var(--ink)] flex items-center justify-center cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="border-b border-[var(--line)] text-[var(--mute)]">
-                    <th className="pb-3 font-bold">Cliente</th>
-                    <th className="pb-3 font-bold">WhatsApp</th>
-                    <th className="pb-3 font-bold">Ciudad</th>
-                    <th className="pb-3 font-bold">Estado</th>
-                    <th className="pb-3 font-bold text-right">Acción</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[var(--line)]">
-                  {Array.isArray(state.subscribers) &&
-                  state.subscribers.length > 0 ? (
-                    state.subscribers.map((sub: any) => (
-                      <tr key={sub.id} className="hover:bg-[var(--bg)]/50">
-                        <td className="py-3.5 font-bold">{sub.name}</td>
-                        <td className="py-3.5 font-mono">{sub.phone}</td>
-                        <td className="py-3.5 text-[var(--mute)]">{sub.city}</td>
-                        <td className="py-3.5">
-                          <span
-                            className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold ${
-                              sub.status === 'activo'
-                                ? 'bg-[var(--ok)]/15 text-[var(--ok)]'
-                                : 'bg-amber-500/15 text-amber-500'
-                            }`}
-                          >
-                            {sub.status.toUpperCase()}
-                          </span>
-                        </td>
-                        <td className="py-3.5 text-right">
-                          {sub.status === 'pendiente' ? (
-                            <button
-                              onClick={() => {
-                                setState((prev: any) => ({
-                                  ...prev,
-                                  subscribers: (prev.subscribers || []).map(
-                                    (s: any) =>
-                                      s.id === sub.id
-                                        ? { ...s, status: 'activo' }
-                                        : s
-                                  ),
-                                }));
-                                say(`¡Acceso aprobado para ${sub.name}! (WhatsApp disparado)`);
-                              }}
-                              className="px-3 py-1.5 bg-[var(--acc)] text-[var(--accink)] font-bold rounded-lg hover:opacity-95 transition cursor-pointer text-[11px]"
-                            >
-                              Aprobar y Enviar WhatsApp
-                            </button>
-                          ) : (
-                            <span className="text-[var(--ok)] font-bold">
-                              Aprobado ✓
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan={5} className="py-6 text-center text-[var(--mute)]">
-                        No hay inscripciones registradas.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            <button
-              onClick={() => setShowAdminCrmModal(false)}
-              className="w-full min-h-[46px] bg-[var(--bg)] border border-[var(--line)] font-bold text-sm rounded-xl cursor-pointer hover:border-[var(--acc)] transition"
-            >
-              Cerrar CRM
-            </button>
-          </motion.div>
-        </div>
+        <AdminCrmModal
+          subscribers={state.subscribers || []}
+          onUpdateSubscribers={(nextSubscribers) =>
+            setState((prev: any) => ({ ...prev, subscribers: nextSubscribers }))
+          }
+          onClose={() => setShowAdminCrmModal(false)}
+          onNotify={say}
+          todayStr={ymd(new Date())}
+        />
       )}
       {/* Modal de Inicio de Sesión / OTP por WhatsApp al dar Comenzar */}
       {showLoginModal && (
