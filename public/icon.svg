@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="hoyBg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#4A5BE0" />
+      <stop offset="100%" stop-color="#2B39A8" />
+    </linearGradient>
+    <linearGradient id="hoyGlow" x1="128" y1="96" x2="384" y2="416" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.22" />
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#hoyBg)" />
+  <rect x="8" y="8" width="496" height="496" rx="108" stroke="url(#hoyGlow)" stroke-width="4" />
+  <!-- Left pillar of architectural H -->
+  <rect x="136" y="128" width="56" height="256" rx="28" fill="#FFFFFF" />
+  <!-- Right pillar of architectural H -->
+  <rect x="320" y="128" width="56" height="256" rx="28" fill="#FFFFFF" />
+  <!-- Kinetic bridge / horizon bar -->
+  <rect x="192" y="232" width="128" height="48" rx="12" fill="#FFFFFF" fill-opacity="0.92" />
+  <!-- Precision solar dot (Now / Hoy focal point) -->
+  <circle cx="256" cy="156" r="24" fill="#FFFFFF" />
+</svg>
