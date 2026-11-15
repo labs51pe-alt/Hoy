@@ -38,6 +38,7 @@ import {
   MoreVertical,
   Smartphone,
   Zap,
+  Calendar,
 } from 'lucide-react';
 
 // ==========================================
@@ -243,6 +244,12 @@ function ymd(d: Date) {
 function back(n: number) {
   const d = new Date();
   d.setDate(d.getDate() - n);
+  return ymd(d);
+}
+
+function tomorrowYmd() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
   return ymd(d);
 }
 
@@ -497,6 +504,21 @@ export default function App() {
       newRoutineTime: '',
       alertsEnabled: false,
       alertsSound: true,
+      eveningReviewEnabled: true,
+      eveningReviewTime: '21:00',
+      morningPromptedDate: '',
+      eveningPromptedDate: '',
+      appliedPlanDate: '',
+      plannedDays: {} as Record<
+        string,
+        {
+          confirmedAt: string;
+          routineType?: 'semana' | 'domingo';
+          activeProjectId?: number | null;
+          priorityTask?: string;
+          priorityTime?: string;
+        }
+      >,
       alertLog: {
         d: ymd(new Date()),
         fired: [] as string[],
@@ -550,6 +572,10 @@ export default function App() {
                     x: Array.isArray(parsed.rut.x) ? parsed.rut.x : [],
                   }
                 : { d: todayStr, x: [] },
+            plannedDays:
+              parsed.plannedDays && typeof parsed.plannedDays === 'object'
+                ? parsed.plannedDays
+                : {},
             alertLog: savedAlertLog,
           };
         }
@@ -693,6 +719,160 @@ export default function App() {
     }, 1000);
     return () => clearTimeout(timer);
   }, [introSplash, introCount]);
+
+  // Cierre nocturno (9 PM), respaldo matutino y organizador rápido de 2 pasos
+  const [showEveningPrompt, setShowEveningPrompt] = useState(false);
+  const [showMorningPrompt, setShowMorningPrompt] = useState(false);
+  const [dayOrganizerTarget, setDayOrganizerTarget] = useState<'today' | 'tomorrow' | null>(null);
+  const [orgRoutine, setOrgRoutine] = useState<'semana' | 'domingo'>('semana');
+  const [orgProjectId, setOrgProjectId] = useState<number | null>(null);
+  const [orgPriorityTask, setOrgPriorityTask] = useState('');
+  const [orgPriorityTime, setOrgPriorityTime] = useState('');
+
+  const openDayOrganizer = (target: 'today' | 'tomorrow') => {
+    const targetDateStr = target === 'tomorrow' ? tomorrowYmd() : ymd(new Date());
+    const existingPlan = state.plannedDays?.[targetDateStr];
+    const activeProj = (Array.isArray(state.projects) ? state.projects : []).find(
+      (p: any) => p.st === 'haciendo'
+    );
+    const defaultRoutine: 'semana' | 'domingo' =
+      existingPlan?.routineType ||
+      (target === 'tomorrow' && new Date().getDay() === 6
+        ? 'domingo'
+        : state.same === false && state.re === 'domingo'
+        ? 'domingo'
+        : 'semana');
+
+    setOrgRoutine(defaultRoutine);
+    setOrgProjectId(
+      existingPlan?.activeProjectId !== undefined
+        ? existingPlan.activeProjectId
+        : activeProj?.id ?? null
+    );
+    setOrgPriorityTask(existingPlan?.priorityTask || '');
+    setOrgPriorityTime(existingPlan?.priorityTime || '');
+    setShowMorningPrompt(false);
+    setShowEveningPrompt(false);
+    setDayOrganizerTarget(target);
+  };
+
+  const confirmKeepAsIs = (target: 'today' | 'tomorrow') => {
+    const todayStr = ymd(new Date());
+    const targetDateStr = target === 'tomorrow' ? tomorrowYmd() : todayStr;
+    setState((prev: any) => ({
+      ...prev,
+      ...(target === 'tomorrow'
+        ? { eveningPromptedDate: todayStr }
+        : { morningPromptedDate: todayStr, appliedPlanDate: todayStr }),
+      plannedDays: {
+        ...(prev.plannedDays || {}),
+        [targetDateStr]: {
+          confirmedAt: new Date().toISOString(),
+        },
+      },
+    }));
+    if (target === 'tomorrow') {
+      setShowEveningPrompt(false);
+      say('Mañana confirmado tal como está.');
+    } else {
+      setShowMorningPrompt(false);
+      say('¡Perfecto! Seguimos con tu plan de hoy.');
+    }
+  };
+
+  const saveDayOrganizer = () => {
+    if (!dayOrganizerTarget) return;
+    const todayStr = ymd(new Date());
+    const targetDateStr =
+      dayOrganizerTarget === 'tomorrow' ? tomorrowYmd() : todayStr;
+    const cleanTask = orgPriorityTask.trim();
+    const cleanTime = orgPriorityTime.trim();
+
+    if (dayOrganizerTarget === 'today') {
+      setState((prev: any) => {
+        let nextProjects = Array.isArray(prev.projects) ? [...prev.projects] : [];
+        if (orgProjectId !== null) {
+          nextProjects = nextProjects.map((p: any) => {
+            if (p.id === orgProjectId) return { ...p, st: 'haciendo' };
+            if (p.st === 'haciendo') return { ...p, st: 'ideas' };
+            return p;
+          });
+        }
+        if (cleanTask) {
+          const targetIdx = nextProjects.findIndex((p: any) =>
+            orgProjectId !== null ? p.id === orgProjectId : p.st === 'haciendo'
+          );
+          if (targetIdx !== -1) {
+            const p = nextProjects[targetIdx];
+            const prevTasks = Array.isArray(p.tasks) ? p.tasks : [];
+            const already = prevTasks.some(
+              (t: any) => t.t?.toLowerCase() === cleanTask.toLowerCase() && !t.d
+            );
+            if (!already) {
+              const newTaskObj = cleanTime
+                ? { t: cleanTask, d: false, time: cleanTime }
+                : { t: cleanTask, d: false };
+              nextProjects[targetIdx] = {
+                ...p,
+                tasks: [newTaskObj, ...prevTasks],
+              };
+            }
+          } else {
+            const newTaskObj = cleanTime
+              ? { t: cleanTask, d: false, time: cleanTime }
+              : { t: cleanTask, d: false };
+            nextProjects = [
+              ...nextProjects,
+              {
+                id: Date.now(),
+                name: 'Enfoque de hoy',
+                step: '',
+                st: 'haciendo',
+                tasks: [newTaskObj],
+              },
+            ];
+          }
+        }
+        return {
+          ...prev,
+          same: false,
+          re: orgRoutine,
+          projects: nextProjects,
+          morningPromptedDate: todayStr,
+          appliedPlanDate: todayStr,
+          plannedDays: {
+            ...(prev.plannedDays || {}),
+            [todayStr]: {
+              confirmedAt: new Date().toISOString(),
+              routineType: orgRoutine,
+              activeProjectId: orgProjectId,
+              priorityTask: cleanTask,
+              priorityTime: cleanTime,
+            },
+          },
+        };
+      });
+      setDayOrganizerTarget(null);
+      say('Tu día de hoy quedó organizado.');
+    } else {
+      setState((prev: any) => ({
+        ...prev,
+        eveningPromptedDate: todayStr,
+        plannedDays: {
+          ...(prev.plannedDays || {}),
+          [targetDateStr]: {
+            confirmedAt: new Date().toISOString(),
+            routineType: orgRoutine,
+            activeProjectId: orgProjectId,
+            priorityTask: cleanTask,
+            priorityTime: cleanTime,
+          },
+        },
+      }));
+      setDayOrganizerTarget(null);
+      say('Plan de mañana guardado. Descansa tranquilo.');
+    }
+  };
 
   useEffect(() => {
     if (!launchModal) return;
@@ -1067,6 +1247,132 @@ export default function App() {
     state.re,
     state.projects,
     state.alertLog,
+  ]);
+
+  // Aplicar automáticamente el plan nocturno cuando llega el día siguiente
+  useEffect(() => {
+    const todayStr = ymd(new Date());
+    const planForToday = state.plannedDays?.[todayStr];
+    if (!planForToday || state.appliedPlanDate === todayStr) return;
+
+    setState((prev: any) => {
+      let nextProjects = Array.isArray(prev.projects) ? [...prev.projects] : [];
+      if (
+        planForToday.activeProjectId !== undefined &&
+        planForToday.activeProjectId !== null
+      ) {
+        nextProjects = nextProjects.map((p: any) => {
+          if (p.id === planForToday.activeProjectId) return { ...p, st: 'haciendo' };
+          if (p.st === 'haciendo') return { ...p, st: 'ideas' };
+          return p;
+        });
+      }
+      const cleanTask = planForToday.priorityTask?.trim();
+      const cleanTime = planForToday.priorityTime?.trim();
+      if (cleanTask) {
+        const targetIdx = nextProjects.findIndex((p: any) =>
+          planForToday.activeProjectId != null
+            ? p.id === planForToday.activeProjectId
+            : p.st === 'haciendo'
+        );
+        const newTaskObj = cleanTime
+          ? { t: cleanTask, d: false, time: cleanTime }
+          : { t: cleanTask, d: false };
+        if (targetIdx !== -1) {
+          const p = nextProjects[targetIdx];
+          const prevTasks = Array.isArray(p.tasks) ? p.tasks : [];
+          const already = prevTasks.some(
+            (t: any) => t.t?.toLowerCase() === cleanTask.toLowerCase() && !t.d
+          );
+          if (!already) {
+            nextProjects[targetIdx] = { ...p, tasks: [newTaskObj, ...prevTasks] };
+          }
+        } else {
+          nextProjects = [
+            ...nextProjects,
+            {
+              id: Date.now(),
+              name: 'Enfoque de hoy',
+              step: '',
+              st: 'haciendo',
+              tasks: [newTaskObj],
+            },
+          ];
+        }
+      }
+
+      return {
+        ...prev,
+        ...(planForToday.routineType
+          ? { same: false, re: planForToday.routineType }
+          : {}),
+        projects: nextProjects,
+        appliedPlanDate: todayStr,
+      };
+    });
+  }, [state.plannedDays, state.appliedPlanDate]);
+
+  // Motor de alerta de cierre nocturno (9 PM por defecto, editable)
+  useEffect(() => {
+    if (state.eveningReviewEnabled === false) return;
+
+    const checkEvening = () => {
+      const now = new Date();
+      const todayStr = ymd(now);
+      const tmrStr = tomorrowYmd();
+      if (state.plannedDays?.[tmrStr]) return;
+      if (state.eveningPromptedDate === todayStr) return;
+
+      const targetMins =
+        parseTimeToMinutes(state.eveningReviewTime || '21:00') ?? 21 * 60;
+      const nowMins = now.getHours() * 60 + now.getMinutes();
+
+      if (nowMins >= targetMins) {
+        setShowEveningPrompt(true);
+        setState((prev: any) => ({ ...prev, eveningPromptedDate: todayStr }));
+        if (state.alertsSound !== false) playAlertChime();
+        dispatchSystemNotification(
+          'HOY · Cierre del día',
+          '¿Dejamos todo igual para mañana o quieres organizarlo?',
+          `hoy-evening-${todayStr}`
+        );
+      }
+    };
+
+    checkEvening();
+    const t = setInterval(checkEvening, 30000);
+    return () => clearInterval(t);
+  }, [
+    state.eveningReviewEnabled,
+    state.eveningReviewTime,
+    state.eveningPromptedDate,
+    state.plannedDays,
+    state.alertsSound,
+  ]);
+
+  // Respaldo inteligente en la mañana: SOLO si anoche no organizaste ni confirmaste hoy
+  useEffect(() => {
+    if (introSplash || state.view !== 'hoy') return;
+    if (sbClient && !user) return;
+    if (dayOrganizerTarget || showEveningPrompt) return;
+
+    const todayStr = ymd(new Date());
+    if (state.plannedDays?.[todayStr]) return;
+    if (state.morningPromptedDate === todayStr) return;
+
+    const timer = setTimeout(() => {
+      setShowMorningPrompt(true);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [
+    introSplash,
+    state.view,
+    sbClient,
+    user,
+    dayOrganizerTarget,
+    showEveningPrompt,
+    state.plannedDays,
+    state.morningPromptedDate,
   ]);
 
   const enableAlerts = async () => {
@@ -1650,6 +1956,56 @@ export default function App() {
 
           {/* Contenido Principal */}
           <main className="max-w-4xl mx-auto px-4 sm:px-6 pt-6 space-y-5">
+            {/* Banner interactivo de Cierre Nocturno (9 PM) para preparar mañana */}
+            <AnimatePresence>
+              {showEveningPrompt && (
+                <motion.div
+                  key="evening-review-banner"
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="bg-[var(--card)] border-2 border-[var(--acc)] rounded-2xl p-4 sm:p-5 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                >
+                  <div className="flex items-start gap-3.5">
+                    <div className="w-11 h-11 rounded-xl bg-[var(--acc)]/15 text-[var(--acc)] flex items-center justify-center shrink-0">
+                      <Moon className="w-5 h-5" />
+                    </div>
+                    <div className="space-y-0.5">
+                      <p className="text-xs font-bold text-[var(--acc)] tabular-nums">
+                        Cierre del día · {state.eveningReviewTime || '21:00'}
+                      </p>
+                      <h3 className="text-base font-extrabold text-[var(--ink)] leading-snug">
+                        ¿Dejamos todo igual para mañana o quieres organizarlo?
+                      </h3>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => openDayOrganizer('tomorrow')}
+                      className="min-h-[44px] px-4 bg-[var(--acc)] text-[var(--accink)] font-extrabold text-xs rounded-xl flex items-center gap-1.5 cursor-pointer hover:opacity-95 transition whitespace-nowrap"
+                    >
+                      <Calendar className="w-4 h-4" />
+                      <span>Organizar mañana</span>
+                    </button>
+                    <button
+                      onClick={() => confirmKeepAsIs('tomorrow')}
+                      className="min-h-[44px] px-3.5 border border-[var(--line)] bg-[var(--bg)] text-[var(--ink)] font-bold text-xs rounded-xl hover:border-[var(--acc)] transition cursor-pointer whitespace-nowrap"
+                    >
+                      Dejar igual
+                    </button>
+                    <button
+                      onClick={() => setShowEveningPrompt(false)}
+                      aria-label="Cerrar aviso nocturno"
+                      className="min-h-[44px] min-w-[44px] rounded-xl text-[var(--mute)] hover:text-[var(--ink)] flex items-center justify-center cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* Banner interactivo de Alerta Activa cuando llega la hora */}
             <AnimatePresence>
               {activeAlert && (
@@ -2305,6 +2661,42 @@ export default function App() {
                               );
                             })()
                           )}
+
+                          {(() => {
+                            const tmrReady = !!state.plannedDays?.[tomorrowYmd()];
+                            return (
+                              <button
+                                onClick={() => openDayOrganizer('tomorrow')}
+                                className={`w-full min-h-[48px] px-4 rounded-xl border text-xs font-bold flex items-center justify-between transition cursor-pointer ${
+                                  tmrReady
+                                    ? 'bg-[var(--ok)]/10 border-[var(--ok)]/40 text-[var(--ink)]'
+                                    : 'bg-[var(--card)] border-[var(--line)] text-[var(--ink)] hover:border-[var(--acc)]'
+                                }`}
+                              >
+                                <span className="flex items-center gap-2">
+                                  <Calendar
+                                    className={`w-4 h-4 ${
+                                      tmrReady ? 'text-[var(--ok)]' : 'text-[var(--acc)]'
+                                    }`}
+                                  />
+                                  <span>
+                                    {tmrReady
+                                      ? 'Plan de mañana listo (editar)'
+                                      : 'Preparar mañana'}
+                                  </span>
+                                </span>
+                                <span
+                                  className={
+                                    tmrReady
+                                      ? 'text-[var(--ok)] font-extrabold'
+                                      : 'text-[var(--mute)]'
+                                  }
+                                >
+                                  {tmrReady ? 'Listo ✓' : state.eveningReviewTime || '21:00'}
+                                </span>
+                              </button>
+                            );
+                          })()}
 
                           {user && (
                             <button
@@ -3379,7 +3771,12 @@ export default function App() {
 
       {/* Prompt automático de instalación PWA al ingresar */}
       <AnimatePresence>
-        {!isWelcome && !isInstalled && showInstallBanner && !showInstallGuide && (
+        {!isWelcome &&
+          !isInstalled &&
+          showInstallBanner &&
+          !showInstallGuide &&
+          !showMorningPrompt &&
+          !dayOrganizerTarget && (
           <motion.div
             initial={{ opacity: 0, y: 28, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -3605,6 +4002,48 @@ export default function App() {
                   {state.alertsSound !== false ? 'Activado' : 'Silencio'}
                 </span>
               </button>
+
+              <div className="rounded-2xl border border-[var(--line)] bg-[var(--bg)] p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-2 text-xs font-bold text-[var(--ink)]">
+                    <Moon className="w-4 h-4 text-[var(--acc)]" />
+                    <span>Cierre nocturno (para mañana)</span>
+                  </span>
+                  <button
+                    onClick={() =>
+                      setState((prev: any) => ({
+                        ...prev,
+                        eveningReviewEnabled: prev.eveningReviewEnabled === false,
+                      }))
+                    }
+                    className={`px-3 py-1 rounded-lg text-xs font-extrabold cursor-pointer transition ${
+                      state.eveningReviewEnabled !== false
+                        ? 'bg-[var(--acc)]/15 text-[var(--acc)]'
+                        : 'bg-[var(--card)] text-[var(--mute)] border border-[var(--line)]'
+                    }`}
+                  >
+                    {state.eveningReviewEnabled !== false ? 'Activo' : 'Apagado'}
+                  </button>
+                </div>
+                {state.eveningReviewEnabled !== false && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs text-[var(--mute)]">
+                      Hora de aviso:
+                    </span>
+                    <input
+                      type="time"
+                      value={state.eveningReviewTime || '21:00'}
+                      onChange={(e) =>
+                        setState((prev: any) => ({
+                          ...prev,
+                          eveningReviewTime: e.target.value || '21:00',
+                        }))
+                      }
+                      className="w-28 text-center text-xs font-bold tabular-nums"
+                    />
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="rounded-2xl bg-[var(--bg)] border border-[var(--line)] p-4 space-y-1.5">
@@ -3658,6 +4097,174 @@ export default function App() {
                 className="min-h-[48px] px-5 border border-[var(--line)] font-bold text-sm rounded-xl hover:border-[var(--acc)] cursor-pointer transition"
               >
                 Cerrar
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Modal Respaldo Matutino (solo si anoche no organizaste hoy) */}
+      {showMorningPrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-sm rounded-3xl bg-[var(--card)] text-[var(--ink)] p-6 shadow-2xl border border-[var(--line)] space-y-5"
+          >
+            <div className="flex items-start gap-3.5">
+              <div className="w-11 h-11 rounded-2xl bg-[var(--acc)]/12 text-[var(--acc)] flex items-center justify-center shrink-0">
+                <Sun className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-lg font-extrabold tracking-tight">
+                  ¿Cómo arrancamos hoy?
+                </h3>
+                <p className="text-xs text-[var(--mute)] mt-1 leading-relaxed">
+                  ¿Seguimos con tu organización inicial o ajustamos tu día en 30 segundos?
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2.5">
+              <button
+                onClick={() => confirmKeepAsIs('today')}
+                className="w-full min-h-[50px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-xl hover:opacity-95 transition cursor-pointer"
+              >
+                Seguir con la organización inicial
+              </button>
+              <button
+                onClick={() => openDayOrganizer('today')}
+                className="w-full min-h-[48px] border border-[var(--line)] bg-[var(--bg)] text-[var(--ink)] font-bold text-sm rounded-xl hover:border-[var(--acc)] transition cursor-pointer"
+              >
+                Organizar mi día
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Modal Organizador Rápido de 2 Pasos (Hoy o Mañana) */}
+      {dayOrganizerTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-md rounded-3xl bg-[var(--card)] text-[var(--ink)] p-6 shadow-2xl border border-[var(--line)] max-h-[90vh] overflow-y-auto space-y-5"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-extrabold tracking-tight">
+                  {dayOrganizerTarget === 'tomorrow'
+                    ? 'Organizar mañana'
+                    : 'Organizar tu día de hoy'}
+                </h3>
+                <p className="text-xs text-[var(--mute)] mt-1">
+                  Solo 2 pasos rápidos para despertar sin dudas y actuar directo.
+                </p>
+              </div>
+              <button
+                onClick={() => setDayOrganizerTarget(null)}
+                aria-label="Cerrar organizador"
+                className="min-h-[36px] min-w-[36px] rounded-xl text-[var(--mute)] hover:text-[var(--ink)] flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Paso 1: Rutina */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-[var(--mute)]">
+                1. ¿Qué rutina usarás?
+              </label>
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  onClick={() => setOrgRoutine('semana')}
+                  className={`min-h-[48px] px-3 rounded-xl border text-xs font-bold transition cursor-pointer ${
+                    orgRoutine === 'semana'
+                      ? 'bg-[var(--acc)] text-[var(--accink)] border-[var(--acc)]'
+                      : 'bg-[var(--bg)] border-[var(--line)] text-[var(--ink)] hover:border-[var(--acc)]'
+                  }`}
+                >
+                  Rutina habitual
+                </button>
+                <button
+                  onClick={() => setOrgRoutine('domingo')}
+                  className={`min-h-[48px] px-3 rounded-xl border text-xs font-bold transition cursor-pointer ${
+                    orgRoutine === 'domingo'
+                      ? 'bg-[var(--acc)] text-[var(--accink)] border-[var(--acc)]'
+                      : 'bg-[var(--bg)] border-[var(--line)] text-[var(--ink)] hover:border-[var(--acc)]'
+                  }`}
+                >
+                  Día ligero (Domingo)
+                </button>
+              </div>
+            </div>
+
+            {/* Paso 2: Proyecto principal y prioridad #1 */}
+            <div className="space-y-3">
+              <label className="block text-xs font-bold text-[var(--mute)]">
+                2. Proyecto principal y prioridad #1
+              </label>
+              {projectsList.filter((p: any) => p.st !== 'terminado').length > 0 && (
+                <div className="space-y-1.5">
+                  {projectsList
+                    .filter((p: any) => p.st !== 'terminado')
+                    .slice(0, 5)
+                    .map((p: any) => (
+                      <button
+                        key={p.id}
+                        onClick={() => setOrgProjectId(p.id)}
+                        className={`w-full min-h-[44px] px-3.5 rounded-xl border text-left text-xs font-bold flex items-center justify-between transition cursor-pointer ${
+                          orgProjectId === p.id
+                            ? 'bg-[var(--acc)]/12 border-[var(--acc)] text-[var(--ink)]'
+                            : 'bg-[var(--bg)] border-[var(--line)] text-[var(--mute)] hover:text-[var(--ink)]'
+                        }`}
+                      >
+                        <span className="truncate pr-2">{p.name}</span>
+                        {orgProjectId === p.id && (
+                          <Check className="w-4 h-4 text-[var(--acc)] shrink-0" />
+                        )}
+                      </button>
+                    ))}
+                </div>
+              )}
+
+              <div className="space-y-2 pt-1">
+                <input
+                  type="text"
+                  value={orgPriorityTask}
+                  onChange={(e) => setOrgPriorityTask(e.target.value)}
+                  placeholder="Prioridad #1 (opcional, ej: Enviar reporte)"
+                  className="text-xs font-semibold"
+                />
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs text-[var(--mute)]">
+                    Hora de aviso (opcional):
+                  </span>
+                  <input
+                    type="time"
+                    value={orgPriorityTime}
+                    onChange={(e) => setOrgPriorityTime(e.target.value)}
+                    className="w-28 text-center text-xs font-bold tabular-nums"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-2.5 pt-1">
+              <button
+                onClick={saveDayOrganizer}
+                className="flex-1 min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-xl cursor-pointer hover:opacity-95 transition"
+              >
+                {dayOrganizerTarget === 'tomorrow'
+                  ? 'Guardar plan de mañana'
+                  : 'Guardar para hoy'}
+              </button>
+              <button
+                onClick={() => setDayOrganizerTarget(null)}
+                className="min-h-[48px] px-4 border border-[var(--line)] font-bold text-sm rounded-xl hover:border-[var(--acc)] cursor-pointer transition"
+              >
+                Cancelar
               </button>
             </div>
           </motion.div>
