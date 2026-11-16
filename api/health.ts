@@ -1,4 +1,4 @@
-import { getSupabaseAdmin } from '../lib/supabaseAdmin';
+import { getSupabaseAdmin } from './_lib/supabaseAdmin';
 
 export default async function handler(_req: any, res: any) {
   const supabaseConfigured = Boolean(getSupabaseAdmin());

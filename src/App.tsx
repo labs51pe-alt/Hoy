@@ -882,13 +882,43 @@ export default function App() {
       const res = await fetch('/api/admin/subscribers', {
         headers: { 'x-admin-pin': pin },
       });
-      if (!res.ok) return;
-      const data = await res.json();
-      if (data.mode === 'supabase' && Array.isArray(data.subscribers)) {
-        setState((prev: any) => ({ ...prev, subscribers: data.subscribers }));
+      if (!res.ok) {
+        let errMsg = `Error HTTP ${res.status} al cargar clientes.`;
+        try {
+          const errData = await res.json();
+          if (errData?.error) errMsg = errData.error;
+        } catch {
+          // Non-JSON response
+        }
+        say(errMsg);
+        return;
+      }
+      let data: any = null;
+      try {
+        data = await res.json();
+      } catch {
+        data = null;
+      }
+      if (!data) {
+        say('Respuesta inválida de /api/admin/subscribers.');
+        return;
+      }
+      if (data.mode === 'supabase') {
+        setCloudStatus((prev) => ({
+          ...prev,
+          checked: true,
+          supabaseConfigured: true,
+        }));
+        if (Array.isArray(data.subscribers)) {
+          setState((prev: any) => ({ ...prev, subscribers: data.subscribers }));
+        }
+      } else {
+        say(
+          'El servidor no tiene SUPABASE_URL o SUPABASE_SECRET_KEY configurados.'
+        );
       }
     } catch {
-      // Mantiene datos locales si no hay conexión
+      say('No se pudo conectar con /api/admin/subscribers.');
     } finally {
       setCrmSyncing(false);
     }
@@ -1308,6 +1338,12 @@ export default function App() {
               }
             }
           }
+        } else if (active) {
+          setCloudStatus({
+            checked: true,
+            supabaseConfigured: false,
+            n8nConfigured: false,
+          });
         }
       } catch {
         if (active) {
@@ -4929,9 +4965,17 @@ export default function App() {
                         plan: regPlan,
                       }),
                     });
-                    const data = await res.json();
-                    if (!res.ok) {
-                      say(data.error || 'No se pudo completar el registro.');
+                    let data: any = null;
+                    try {
+                      data = await res.json();
+                    } catch {
+                      data = null;
+                    }
+                    if (!res.ok || !data) {
+                      say(
+                        data?.error ||
+                          `Error del servidor (${res.status}) al registrar.`
+                      );
                       setIsRegBusy(false);
                       return;
                     }
@@ -4940,7 +4984,9 @@ export default function App() {
                     }
                     whatsappSent = Boolean(data.whatsappSent);
                   } catch {
-                    // Respaldo local en caso de estar offline
+                    say('No se pudo conectar con el servidor (/api/register).');
+                    setIsRegBusy(false);
+                    return;
                   } finally {
                     setIsRegBusy(false);
                   }
@@ -5114,103 +5160,158 @@ export default function App() {
           isSyncing={crmSyncing}
           onRefreshCloud={() => fetchAdminSubscribers(adminVerifiedPin || '1982')}
           onCreateSubscriber={async (record) => {
-            if (!cloudStatus.supabaseConfigured) return;
-            const res = await fetch('/api/admin/subscribers', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-admin-pin': adminVerifiedPin || '1982',
-              },
-              body: JSON.stringify(record),
-            });
-            const data = await res.json();
-            if (!res.ok) {
-              say(data.error || 'Error guardando cliente en Supabase.');
-              void fetchAdminSubscribers(adminVerifiedPin || '1982');
-              return;
-            }
-            if (data.subscriber) return data.subscriber;
-          }}
-          onPatchSubscriber={async (sub, patch) => {
-            if (!cloudStatus.supabaseConfigured || !sub.dbId) return;
-            const res = await fetch('/api/admin/subscribers', {
-              method: 'PATCH',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-admin-pin': adminVerifiedPin || '1982',
-              },
-              body: JSON.stringify({
-                dbId: sub.dbId,
-                action: 'update',
-                patch,
-              }),
-            });
-            const data = await res.json();
-            if (!res.ok) {
-              say(data.error || 'Error actualizando cliente en Supabase.');
-              void fetchAdminSubscribers(adminVerifiedPin || '1982');
-              return;
-            }
-            if (data.subscriber) return data.subscriber;
-          }}
-          onApproveSubscriber={async (sub) => {
-            if (!cloudStatus.supabaseConfigured || !sub.dbId) return;
-            const res = await fetch('/api/admin/subscribers', {
-              method: 'PATCH',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-admin-pin': adminVerifiedPin || '1982',
-              },
-              body: JSON.stringify({
-                dbId: sub.dbId,
-                action: 'approve',
-                amount: sub.amount,
-              }),
-            });
-            const data = await res.json();
-            if (!res.ok) {
-              say(data.error || 'Error aprobando pago en Supabase.');
-              void fetchAdminSubscribers(adminVerifiedPin || '1982');
-              return;
-            }
-            if (data.subscriber) return data.subscriber;
-          }}
-          onAddPaymentEntry={async (sub, entry: PaymentEntry) => {
-            if (!cloudStatus.supabaseConfigured || !sub.dbId) return;
-            const res = await fetch('/api/admin/subscribers', {
-              method: 'PATCH',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-admin-pin': adminVerifiedPin || '1982',
-              },
-              body: JSON.stringify({
-                dbId: sub.dbId,
-                action: 'add_payment',
-                payment: entry,
-              }),
-            });
-            const data = await res.json();
-            if (!res.ok) {
-              say(data.error || 'Error registrando cobro en Supabase.');
-              void fetchAdminSubscribers(adminVerifiedPin || '1982');
-              return;
-            }
-            if (data.subscriber) return data.subscriber;
-          }}
-          onDeleteSubscriber={async (sub) => {
-            if (!cloudStatus.supabaseConfigured || !sub.dbId) return;
-            const res = await fetch(
-              `/api/admin/subscribers?id=${encodeURIComponent(sub.dbId)}`,
-              {
-                method: 'DELETE',
+            try {
+              const res = await fetch('/api/admin/subscribers', {
+                method: 'POST',
                 headers: {
+                  'Content-Type': 'application/json',
                   'x-admin-pin': adminVerifiedPin || '1982',
                 },
+                body: JSON.stringify(record),
+              });
+              let data: any = null;
+              try {
+                data = await res.json();
+              } catch {
+                data = null;
               }
-            );
-            if (!res.ok) {
-              say('No se pudo eliminar el cliente en Supabase.');
-              void fetchAdminSubscribers(adminVerifiedPin || '1982');
+              if (!res.ok || !data) {
+                say(data?.error || `Error (${res.status}) guardando cliente en Supabase.`);
+                void fetchAdminSubscribers(adminVerifiedPin || '1982');
+                return;
+              }
+              if (data.mode !== 'supabase') {
+                say('Servidor sin Supabase configurado: cliente no guardado en la nube.');
+                return;
+              }
+              if (data.subscriber) return data.subscriber;
+            } catch {
+              say('No se pudo conectar con /api/admin/subscribers.');
+            }
+          }}
+          onPatchSubscriber={async (sub, patch) => {
+            if (!sub.dbId) {
+              say('Este registro es local y no tiene ID de Supabase.');
+              return;
+            }
+            try {
+              const res = await fetch('/api/admin/subscribers', {
+                method: 'PATCH',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-admin-pin': adminVerifiedPin || '1982',
+                },
+                body: JSON.stringify({
+                  dbId: sub.dbId,
+                  action: 'update',
+                  patch,
+                }),
+              });
+              let data: any = null;
+              try {
+                data = await res.json();
+              } catch {
+                data = null;
+              }
+              if (!res.ok || !data) {
+                say(data?.error || `Error (${res.status}) actualizando cliente en Supabase.`);
+                void fetchAdminSubscribers(adminVerifiedPin || '1982');
+                return;
+              }
+              if (data.subscriber) return data.subscriber;
+            } catch {
+              say('No se pudo conectar con /api/admin/subscribers.');
+            }
+          }}
+          onApproveSubscriber={async (sub) => {
+            if (!sub.dbId) {
+              say('Este registro es local y no tiene ID de Supabase.');
+              return;
+            }
+            try {
+              const res = await fetch('/api/admin/subscribers', {
+                method: 'PATCH',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-admin-pin': adminVerifiedPin || '1982',
+                },
+                body: JSON.stringify({
+                  dbId: sub.dbId,
+                  action: 'approve',
+                  amount: sub.amount,
+                }),
+              });
+              let data: any = null;
+              try {
+                data = await res.json();
+              } catch {
+                data = null;
+              }
+              if (!res.ok || !data) {
+                say(data?.error || `Error (${res.status}) aprobando pago en Supabase.`);
+                void fetchAdminSubscribers(adminVerifiedPin || '1982');
+                return;
+              }
+              if (data.whatsappSent === false) {
+                say('Cliente aprobado en Supabase, pero n8n no respondió al webhook de WhatsApp.');
+              }
+              if (data.subscriber) return data.subscriber;
+            } catch {
+              say('No se pudo conectar con /api/admin/subscribers.');
+            }
+          }}
+          onAddPaymentEntry={async (sub, entry: PaymentEntry) => {
+            if (!sub.dbId) {
+              say('Este registro es local y no tiene ID de Supabase.');
+              return;
+            }
+            try {
+              const res = await fetch('/api/admin/subscribers', {
+                method: 'PATCH',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-admin-pin': adminVerifiedPin || '1982',
+                },
+                body: JSON.stringify({
+                  dbId: sub.dbId,
+                  action: 'add_payment',
+                  payment: entry,
+                }),
+              });
+              let data: any = null;
+              try {
+                data = await res.json();
+              } catch {
+                data = null;
+              }
+              if (!res.ok || !data) {
+                say(data?.error || `Error (${res.status}) registrando cobro en Supabase.`);
+                void fetchAdminSubscribers(adminVerifiedPin || '1982');
+                return;
+              }
+              if (data.subscriber) return data.subscriber;
+            } catch {
+              say('No se pudo conectar con /api/admin/subscribers.');
+            }
+          }}
+          onDeleteSubscriber={async (sub) => {
+            if (!sub.dbId) return;
+            try {
+              const res = await fetch(
+                `/api/admin/subscribers?id=${encodeURIComponent(sub.dbId)}`,
+                {
+                  method: 'DELETE',
+                  headers: {
+                    'x-admin-pin': adminVerifiedPin || '1982',
+                  },
+                }
+              );
+              if (!res.ok) {
+                say('No se pudo eliminar el cliente en Supabase.');
+                void fetchAdminSubscribers(adminVerifiedPin || '1982');
+              }
+            } catch {
+              say('No se pudo conectar con /api/admin/subscribers.');
             }
           }}
         />
@@ -5305,14 +5406,28 @@ export default function App() {
                           sessionToken,
                         }),
                       });
-                      const data = await res.json();
+                      let data: any = null;
+                      try {
+                        data = await res.json();
+                      } catch {
+                        data = null;
+                      }
 
-                      if (!res.ok) {
-                        say(data.error || 'No se pudo iniciar sesión.');
+                      if (!res.ok || !data) {
+                        say(
+                          data?.error ||
+                            `Error del servidor (${res.status}) al solicitar código.`
+                        );
                         return;
                       }
 
                       if (data.mode === 'supabase') {
+                        setCloudStatus((prev) => ({
+                          ...prev,
+                          checked: true,
+                          supabaseConfigured: true,
+                        }));
+
                         if (data.skipOtp && data.profile) {
                           applyAuthenticatedProfileState(
                             data.profile,
@@ -5331,19 +5446,19 @@ export default function App() {
                         setSimulatedOtp(data.devOtp || '');
                         setOtpHintMessage(
                           data.devOtp
-                            ? `Modo prueba (n8n pendiente): tu código es ${data.devOtp}`
+                            ? `Webhook n8n sin respuesta o pendiente: código ${data.devOtp}`
                             : 'Código enviado por WhatsApp. Válido por 10 minutos.'
                         );
                         setLoginStep('otp');
                         say(
                           data.whatsappSent
                             ? 'Código OTP enviado a tu WhatsApp.'
-                            : 'Código OTP generado. Revisa el modal.'
+                            : 'OTP generado, pero el webhook n8n no respondió HTTP 200.'
                         );
                         return;
                       }
 
-                      // Fallback local cuando Supabase aún no tiene variables configuradas
+                      // Modo local explícito cuando el servidor confirma mode === 'local'
                       const fullPhone = `${loginCountryCode} ${phoneClean}`;
                       const foundSub = (state.subscribers || []).find(
                         (s: any) =>
@@ -5361,19 +5476,12 @@ export default function App() {
                       );
                       setSimulatedOtp(generated);
                       setOtpHintMessage(
-                        `Modo local: el código temporal es ${generated}`
+                        `Modo local (sin variables Supabase): código ${generated}`
                       );
                       setLoginStep('otp');
                       say(`Código OTP local: ${generated}`);
                     } catch {
-                      const generated = String(
-                        Math.floor(100000 + Math.random() * 900000)
-                      );
-                      setSimulatedOtp(generated);
-                      setOtpHintMessage(
-                        `Sin conexión al servidor · código local: ${generated}`
-                      );
-                      setLoginStep('otp');
+                      say('No se pudo conectar con /api/auth/request-otp.');
                     } finally {
                       setIsAuthBusy(false);
                     }
@@ -5418,22 +5526,36 @@ export default function App() {
 
                       setIsAuthBusy(true);
                       try {
-                        if (cloudStatus.supabaseConfigured) {
-                          const res = await fetch('/api/auth/verify-otp', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                              countryCode: loginCountryCode,
-                              phoneNum: loginPhoneNum.trim(),
-                              code: codeClean,
-                              deviceLabel: navigator.userAgent.slice(0, 60),
-                            }),
-                          });
-                          const data = await res.json();
-                          if (!res.ok) {
-                            say(data.error || 'Código OTP incorrecto.');
-                            return;
-                          }
+                        const res = await fetch('/api/auth/verify-otp', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            countryCode: loginCountryCode,
+                            phoneNum: loginPhoneNum.trim(),
+                            code: codeClean,
+                            deviceLabel: navigator.userAgent.slice(0, 60),
+                          }),
+                        });
+                        let data: any = null;
+                        try {
+                          data = await res.json();
+                        } catch {
+                          data = null;
+                        }
+                        if (!res.ok || !data) {
+                          say(
+                            data?.error ||
+                              `Error del servidor (${res.status}) al verificar OTP.`
+                          );
+                          return;
+                        }
+
+                        if (data.mode === 'supabase') {
+                          setCloudStatus((prev) => ({
+                            ...prev,
+                            checked: true,
+                            supabaseConfigured: true,
+                          }));
                           if (data.sessionToken) {
                             setSessionToken(data.sessionToken);
                             try {
@@ -5480,7 +5602,7 @@ export default function App() {
                         window.scrollTo(0, 0);
                         say('¡Bienvenido! Perfil cargado correctamente.');
                       } catch {
-                        say('Error de red al verificar el código.');
+                        say('No se pudo conectar con /api/auth/verify-otp.');
                       } finally {
                         setIsAuthBusy(false);
                       }

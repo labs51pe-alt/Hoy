@@ -10,11 +10,16 @@ export const PLAN_PRICES_PEN: Record<string, number> = {
 let cachedClient: SupabaseClient | null = null;
 
 export function getSupabaseAdmin(): SupabaseClient | null {
-  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
-  const serviceKey =
+  const url = (
+    process.env.SUPABASE_URL ||
+    process.env.VITE_SUPABASE_URL ||
+    ''
+  ).trim();
+  const serviceKey = (
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     process.env.SUPABASE_SECRET_KEY ||
-    '';
+    ''
+  ).trim();
 
   if (!url.startsWith('http') || !serviceKey) {
     return null;
@@ -76,6 +81,13 @@ export function getAdminPin(): string {
 
 export function parseJsonBody(req: any): any {
   if (!req.body) return {};
+  if (Buffer.isBuffer(req.body)) {
+    try {
+      return JSON.parse(req.body.toString('utf8'));
+    } catch {
+      return {};
+    }
+  }
   if (typeof req.body === 'string') {
     try {
       return JSON.parse(req.body);
@@ -126,7 +138,7 @@ export async function triggerN8nWhatsApp(
     messagePreview: string;
   }
 ): Promise<{ sent: boolean; error?: string }> {
-  const webhookUrl = process.env.N8N_WEBHOOK_URL || '';
+  const webhookUrl = (process.env.N8N_WEBHOOK_URL || '').trim();
   let deliveryStatus: 'pendiente' | 'enviado' | 'error' = 'pendiente';
   let errorDetail = '';
 

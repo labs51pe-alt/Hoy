@@ -1,4 +1,4 @@
-import { getAdminPin, parseJsonBody } from '../../lib/supabaseAdmin';
+import { getAdminPin, parseJsonBody } from '../_lib/supabaseAdmin';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {

@@ -5,7 +5,7 @@ import {
   normalizePhoneE164,
   parseJsonBody,
   triggerN8nWhatsApp,
-} from '../lib/supabaseAdmin';
+} from './_lib/supabaseAdmin';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {

@@ -4,7 +4,7 @@ import {
   normalizePhoneE164,
   parseJsonBody,
   sha256,
-} from '../../lib/supabaseAdmin';
+} from '../_lib/supabaseAdmin';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {

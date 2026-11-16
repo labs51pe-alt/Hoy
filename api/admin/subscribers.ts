@@ -7,7 +7,7 @@ import {
   normalizePhoneE164,
   parseJsonBody,
   triggerN8nWhatsApp,
-} from '../../lib/supabaseAdmin';
+} from '../_lib/supabaseAdmin';
 
 function isAdminAuthorized(req: any): boolean {
   const pinHeader = String(req.headers?.['x-admin-pin'] || '').trim();
