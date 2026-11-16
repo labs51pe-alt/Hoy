@@ -86,6 +86,29 @@ export function parseJsonBody(req: any): any {
   return req.body;
 }
 
+export function calculateExpiresAt(plan: string): string | null {
+  if (plan === 'Mensual') {
+    return new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  }
+  if (plan === 'Trimestral') {
+    return new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+  }
+  return null;
+}
+
+export function resolveAppUrl(): string {
+  if (process.env.APP_URL && process.env.APP_URL.startsWith('http')) {
+    return process.env.APP_URL;
+  }
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  }
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  return '';
+}
+
 export async function triggerN8nWhatsApp(
   supabase: SupabaseClient | null,
   params: {
@@ -112,6 +135,7 @@ export async function triggerN8nWhatsApp(
       const response = await fetch(webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(8000),
         body: JSON.stringify({
           event: params.eventType,
           phone: params.phoneE164,
@@ -120,7 +144,7 @@ export async function triggerN8nWhatsApp(
           amount_pen: params.amountPen ?? 75,
           otp_code: params.otpCode || null,
           message: params.messagePreview,
-          app_url: process.env.APP_URL || '',
+          app_url: resolveAppUrl(),
           timestamp: new Date().toISOString(),
         }),
       });
@@ -163,8 +187,9 @@ export function mapDbProfileToSubscriber(
   const numericId =
     typeof profile.numeric_id === 'number'
       ? profile.numeric_id
-      : Number(String(profile.id || '').replace(/\D/g, '').slice(0, 12)) ||
-        numericFallbackId;
+      : profile.id
+      ? parseInt(sha256(String(profile.id)).slice(0, 12), 16) || numericFallbackId
+      : numericFallbackId;
 
   return {
     id: numericId,
@@ -184,9 +209,9 @@ export function mapDbProfileToSubscriber(
       ? String(profile.approved_at).slice(0, 10)
       : undefined,
     payments: payments.map((p, idx) => ({
-      id:
-        Number(String(p.id || '').replace(/\D/g, '').slice(0, 10)) ||
-        Date.now() + idx,
+      id: p.id
+        ? parseInt(sha256(String(p.id)).slice(0, 12), 16)
+        : Date.now() + idx,
       date: String(p.paid_at || p.created_at || '').slice(0, 10),
       amount: Number(p.amount_pen) || 0,
       method: p.method || 'Yape',

@@ -1,5 +1,6 @@
 import {
   PLAN_PRICES_PEN,
+  calculateExpiresAt,
   getAdminPin,
   getSupabaseAdmin,
   mapDbProfileToSubscriber,
@@ -122,11 +123,18 @@ export default async function handler(req: any, res: any) {
           payment_ref: paymentRef,
           notes,
           approved_at: isPaid ? nowIso : null,
+          expires_at: isPaid ? calculateExpiresAt(plan) : null,
         })
         .select('*')
         .single();
 
       if (insErr) {
+        if (insErr.code === '23505') {
+          return res.status(409).json({
+            ok: false,
+            error: 'Ya existe un cliente registrado con ese número de WhatsApp.',
+          });
+        }
         return res.status(500).json({ ok: false, error: insErr.message });
       }
 
@@ -194,6 +202,7 @@ export default async function handler(req: any, res: any) {
             payment_method: method,
             amount_pen: amountPen,
             approved_at: current.approved_at || nowIso,
+            expires_at: calculateExpiresAt(current.plan),
           })
           .eq('id', dbId)
           .select('*')
@@ -284,6 +293,7 @@ export default async function handler(req: any, res: any) {
             payment_method: method,
             payment_ref: ref || current.payment_ref,
             approved_at: current.approved_at || nowIso,
+            expires_at: calculateExpiresAt(current.plan),
           })
           .eq('id', dbId)
           .select('*')

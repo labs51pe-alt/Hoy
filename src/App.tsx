@@ -52,6 +52,7 @@ import AdminCrmModal, {
 // ==========================================
 const STORAGE_KEY = 'progreso-v10';
 const SESSION_TOKEN_KEY = 'hoy_session_token';
+const PROFILE_ID_KEY = 'hoy_profile_id';
 
 const ST = [
   ['ideas', 'Ideas'],
@@ -1219,6 +1220,53 @@ export default function App() {
     setLaunchModal(null);
   };
 
+  const applyAuthenticatedProfileState = (
+    profile: { id: string; name: string; phone: string; plan?: string },
+    progressData: any,
+    moveToHoy: boolean
+  ) => {
+    setActiveProfile(profile);
+    let prevProfileId = '';
+    try {
+      prevProfileId = localStorage.getItem(PROFILE_ID_KEY) || '';
+      localStorage.setItem(PROFILE_ID_KEY, profile.id);
+    } catch {
+      // Ignore storage errors
+    }
+
+    const isSwitchingToFreshUser =
+      prevProfileId !== '' && prevProfileId !== profile.id && !progressData;
+
+    setState((prev: any) => {
+      if (progressData && typeof progressData === 'object') {
+        return {
+          ...prev,
+          ...progressData,
+          subscribers: prev.subscribers,
+          ...(moveToHoy ? { view: 'hoy', hasStarted: true } : {}),
+        };
+      }
+      if (isSwitchingToFreshUser) {
+        return {
+          ...prev,
+          view: moveToHoy ? 'hoy' : prev.view,
+          hasStarted: moveToHoy ? true : prev.hasStarted,
+          same: true,
+          re: 'semana',
+          rut: { d: ymd(new Date()), x: [] },
+          days: [],
+          routines: { semana: DEFAULT_RUT, domingo: DEFAULT_DOM },
+          projects: DEFAULT_PROJECTS,
+          plannedDays: {},
+          morningPromptedDate: '',
+          eveningPromptedDate: '',
+          appliedPlanDate: '',
+        };
+      }
+      return moveToHoy ? { ...prev, view: 'hoy', hasStarted: true } : prev;
+    });
+  };
+
   useEffect(() => {
     let active = true;
     const initCloud = async () => {
@@ -1226,27 +1274,29 @@ export default function App() {
         const healthRes = await fetch('/api/health');
         if (healthRes.ok && active) {
           const healthData = await healthRes.json();
+          const sbReady = Boolean(healthData.supabaseConfigured);
           setCloudStatus({
             checked: true,
-            supabaseConfigured: Boolean(healthData.supabaseConfigured),
+            supabaseConfigured: sbReady,
             n8nConfigured: Boolean(healthData.n8nConfigured),
           });
 
-          if (healthData.supabaseConfigured && sessionToken) {
+          if (sbReady && active) {
+            setState((prev: any) => ({ ...prev, subscribers: [] }));
+          }
+
+          if (sbReady && sessionToken) {
             const sessRes = await fetch('/api/auth/session', {
               headers: { Authorization: `Bearer ${sessionToken}` },
             });
             if (sessRes.ok && active) {
               const sessData = await sessRes.json();
               if (sessData.authenticated && sessData.profile) {
-                setActiveProfile(sessData.profile);
-                if (sessData.progressData && typeof sessData.progressData === 'object') {
-                  setState((prev: any) => ({
-                    ...prev,
-                    ...sessData.progressData,
-                    subscribers: prev.subscribers,
-                  }));
-                }
+                applyAuthenticatedProfileState(
+                  sessData.profile,
+                  sessData.progressData,
+                  false
+                );
               } else if (sessData.mode === 'supabase') {
                 setActiveProfile(null);
                 setSessionToken('');
@@ -5074,7 +5124,12 @@ export default function App() {
               body: JSON.stringify(record),
             });
             const data = await res.json();
-            if (res.ok && data.subscriber) return data.subscriber;
+            if (!res.ok) {
+              say(data.error || 'Error guardando cliente en Supabase.');
+              void fetchAdminSubscribers(adminVerifiedPin || '1982');
+              return;
+            }
+            if (data.subscriber) return data.subscriber;
           }}
           onPatchSubscriber={async (sub, patch) => {
             if (!cloudStatus.supabaseConfigured || !sub.dbId) return;
@@ -5091,7 +5146,12 @@ export default function App() {
               }),
             });
             const data = await res.json();
-            if (res.ok && data.subscriber) return data.subscriber;
+            if (!res.ok) {
+              say(data.error || 'Error actualizando cliente en Supabase.');
+              void fetchAdminSubscribers(adminVerifiedPin || '1982');
+              return;
+            }
+            if (data.subscriber) return data.subscriber;
           }}
           onApproveSubscriber={async (sub) => {
             if (!cloudStatus.supabaseConfigured || !sub.dbId) return;
@@ -5108,7 +5168,12 @@ export default function App() {
               }),
             });
             const data = await res.json();
-            if (res.ok && data.subscriber) return data.subscriber;
+            if (!res.ok) {
+              say(data.error || 'Error aprobando pago en Supabase.');
+              void fetchAdminSubscribers(adminVerifiedPin || '1982');
+              return;
+            }
+            if (data.subscriber) return data.subscriber;
           }}
           onAddPaymentEntry={async (sub, entry: PaymentEntry) => {
             if (!cloudStatus.supabaseConfigured || !sub.dbId) return;
@@ -5125,16 +5190,28 @@ export default function App() {
               }),
             });
             const data = await res.json();
-            if (res.ok && data.subscriber) return data.subscriber;
+            if (!res.ok) {
+              say(data.error || 'Error registrando cobro en Supabase.');
+              void fetchAdminSubscribers(adminVerifiedPin || '1982');
+              return;
+            }
+            if (data.subscriber) return data.subscriber;
           }}
           onDeleteSubscriber={async (sub) => {
             if (!cloudStatus.supabaseConfigured || !sub.dbId) return;
-            await fetch(`/api/admin/subscribers?id=${encodeURIComponent(sub.dbId)}`, {
-              method: 'DELETE',
-              headers: {
-                'x-admin-pin': adminVerifiedPin || '1982',
-              },
-            });
+            const res = await fetch(
+              `/api/admin/subscribers?id=${encodeURIComponent(sub.dbId)}`,
+              {
+                method: 'DELETE',
+                headers: {
+                  'x-admin-pin': adminVerifiedPin || '1982',
+                },
+              }
+            );
+            if (!res.ok) {
+              say('No se pudo eliminar el cliente en Supabase.');
+              void fetchAdminSubscribers(adminVerifiedPin || '1982');
+            }
           }}
         />
       )}
@@ -5237,18 +5314,15 @@ export default function App() {
 
                       if (data.mode === 'supabase') {
                         if (data.skipOtp && data.profile) {
-                          setActiveProfile(data.profile);
+                          applyAuthenticatedProfileState(
+                            data.profile,
+                            data.progressData,
+                            true
+                          );
                           setShowLoginModal(false);
                           setLoginStep('phone');
                           setLoginPhoneNum('');
                           setLoginOtpCode('');
-                          setState((prev: any) => ({
-                            ...prev,
-                            ...(data.progressData || {}),
-                            subscribers: prev.subscribers,
-                            view: 'hoy',
-                            hasStarted: true,
-                          }));
                           window.scrollTo(0, 0);
                           say(`¡Bienvenido de nuevo, ${data.profile.name}!`);
                           return;
@@ -5372,20 +5446,17 @@ export default function App() {
                             }
                           }
                           if (data.profile) {
-                            setActiveProfile(data.profile);
+                            applyAuthenticatedProfileState(
+                              data.profile,
+                              data.progressData,
+                              true
+                            );
                           }
                           setShowLoginModal(false);
                           setLoginStep('phone');
                           setLoginPhoneNum('');
                           setLoginOtpCode('');
                           setOtpHintMessage('');
-                          setState((prev: any) => ({
-                            ...prev,
-                            ...(data.progressData || {}),
-                            subscribers: prev.subscribers,
-                            view: 'hoy',
-                            hasStarted: true,
-                          }));
                           window.scrollTo(0, 0);
                           say('¡Bienvenido! Sesión activa por 7 días.');
                           return;
