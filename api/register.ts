@@ -5,56 +5,56 @@ import {
   normalizePhoneE164,
   parseJsonBody,
   triggerN8nWhatsApp,
-} from './_lib/supabaseAdmin';
+} from './_lib/supabaseAdmin.js';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     return res.status(405).json({ ok: false, error: 'Método no permitido' });
   }
 
-  const body = parseJsonBody(req);
-  const name = String(body.name || '').trim();
-  const countryCode = String(body.countryCode || '+51').trim();
-  const phoneNum = String(body.phoneNum || '').trim();
-  const city = String(body.city || '').trim() || 'No especificada';
-  const plan =
-    body.plan === 'Mensual' || body.plan === 'Trimestral' || body.plan === 'Vitalicio'
-      ? body.plan
-      : 'Vitalicio';
-
-  if (!name || !phoneNum || phoneNum.replace(/\D/g, '').length < 6) {
-    return res.status(400).json({
-      ok: false,
-      error: 'Por favor ingresa tu nombre completo y un número de WhatsApp válido.',
-    });
-  }
-
-  const phone = normalizePhoneE164(phoneNum, countryCode);
-  const amountPen = PLAN_PRICES_PEN[plan] ?? 75;
-  const supabase = getSupabaseAdmin();
-
-  if (!supabase) {
-    return res.status(200).json({
-      ok: true,
-      mode: 'local',
-      whatsappSent: false,
-      subscriber: {
-        id: Date.now(),
-        name,
-        phone: phone.formatted,
-        city,
-        status: 'pendiente',
-        plan,
-        amount: amountPen,
-        paymentMethod: 'Por definir',
-        paymentStatus: 'pendiente',
-        date: new Date().toISOString().slice(0, 10),
-        payments: [],
-      },
-    });
-  }
-
   try {
+    const body = parseJsonBody(req);
+    const name = String(body.name || '').trim();
+    const countryCode = String(body.countryCode || '+51').trim();
+    const phoneNum = String(body.phoneNum || '').trim();
+    const city = String(body.city || '').trim() || 'No especificada';
+    const plan =
+      body.plan === 'Mensual' || body.plan === 'Trimestral' || body.plan === 'Vitalicio'
+        ? body.plan
+        : 'Vitalicio';
+
+    if (!name || !phoneNum || phoneNum.replace(/\D/g, '').length < 6) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Por favor ingresa tu nombre completo y un número de WhatsApp válido.',
+      });
+    }
+
+    const phone = normalizePhoneE164(phoneNum, countryCode);
+    const amountPen = PLAN_PRICES_PEN[plan] ?? 75;
+    const supabase = getSupabaseAdmin();
+
+    if (!supabase) {
+      return res.status(200).json({
+        ok: true,
+        mode: 'local',
+        whatsappSent: false,
+        subscriber: {
+          id: Date.now(),
+          name,
+          phone: phone.formatted,
+          city,
+          status: 'pendiente',
+          plan,
+          amount: amountPen,
+          paymentMethod: 'Por definir',
+          paymentStatus: 'pendiente',
+          date: new Date().toISOString().slice(0, 10),
+          payments: [],
+        },
+      });
+    }
+
     const { data: existing, error: fetchErr } = await supabase
       .from('profiles')
       .select('*')

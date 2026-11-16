@@ -143,11 +143,13 @@ export async function triggerN8nWhatsApp(
   let errorDetail = '';
 
   if (webhookUrl && webhookUrl.startsWith('http')) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
     try {
       const response = await fetch(webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(8000),
+        signal: controller.signal,
         body: JSON.stringify({
           event: params.eventType,
           phone: params.phoneE164,
@@ -167,6 +169,8 @@ export async function triggerN8nWhatsApp(
     } catch (err: any) {
       deliveryStatus = 'error';
       errorDetail = err?.message || 'Fetch error';
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 

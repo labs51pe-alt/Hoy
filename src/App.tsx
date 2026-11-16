@@ -4965,16 +4965,21 @@ export default function App() {
                         plan: regPlan,
                       }),
                     });
+                    const rawText = await res.text();
                     let data: any = null;
                     try {
-                      data = await res.json();
+                      data = rawText ? JSON.parse(rawText) : null;
                     } catch {
                       data = null;
                     }
                     if (!res.ok || !data) {
+                      const snippet =
+                        !data && rawText && !rawText.trim().startsWith('<')
+                          ? ` (${rawText.trim().slice(0, 90)})`
+                          : '';
                       say(
                         data?.error ||
-                          `Error del servidor (${res.status}) al registrar.`
+                          `Error del servidor (${res.status}) al registrar.${snippet}`
                       );
                       setIsRegBusy(false);
                       return;

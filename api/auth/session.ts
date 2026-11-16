@@ -1,4 +1,4 @@
-import { getSupabaseAdmin, sha256 } from '../_lib/supabaseAdmin';
+import { getSupabaseAdmin, sha256 } from '../_lib/supabaseAdmin.js';
 
 function extractBearerToken(req: any): string {
   const auth = String(req.headers?.authorization || '');
