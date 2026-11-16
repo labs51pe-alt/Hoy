@@ -24,6 +24,7 @@ import {
   Send,
   KeyRound,
   Save,
+  LogOut,
 } from 'lucide-react';
 
 export type SubscriberStatus = 'pendiente' | 'activo' | 'pausado' | 'vencido';
@@ -900,10 +901,12 @@ export default function AdminCrmModal({
             </button>
             <button
               onClick={onClose}
-              aria-label="Cerrar CRM"
-              className="min-h-[38px] min-w-[38px] rounded-xl border border-[var(--line)] text-[var(--mute)] hover:text-[var(--ink)] hover:border-[var(--acc)] flex items-center justify-center cursor-pointer transition"
+              aria-label="Salir del CRM"
+              className="min-h-[38px] px-2.5 sm:px-3 rounded-xl border border-[var(--line)] text-[var(--mute)] hover:text-red-500 hover:border-red-500/50 flex items-center justify-center gap-1.5 cursor-pointer transition text-xs font-bold"
+              title="Salir del CRM"
             >
-              <X className="w-4 h-4" />
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Salir</span>
             </button>
           </div>
 

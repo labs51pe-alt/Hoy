@@ -53,6 +53,7 @@ import AdminCrmModal, {
 const STORAGE_KEY = 'progreso-v10';
 const SESSION_TOKEN_KEY = 'hoy_session_token';
 const PROFILE_ID_KEY = 'hoy_profile_id';
+const ADMIN_CRM_SESSION_KEY = 'hoy_admin_crm_session';
 
 const ST = [
   ['ideas', 'Ideas'],
@@ -665,10 +666,20 @@ export default function App() {
                 }
               : { d: todayStr, fired: [], snoozedUntil: {} };
 
+          const restoredHasStarted = Boolean(parsed.hasStarted);
+          const restoredView =
+            restoredHasStarted &&
+            (parsed.view === 'hoy' || parsed.view === 'proys')
+              ? parsed.view
+              : restoredHasStarted
+              ? 'hoy'
+              : 'welcome';
+
           return {
             ...defaultState,
             ...parsed,
-            view: 'welcome',
+            view: restoredView,
+            hasStarted: restoredHasStarted,
             projects: Array.isArray(parsed.projects)
               ? parsed.projects
               : DEFAULT_PROJECTS,
@@ -750,7 +761,18 @@ export default function App() {
     plan?: string;
   } | null>(null);
   const [showConfigModal, setShowConfigModal] = useState(false);
-  const [adminVerifiedPin, setAdminVerifiedPin] = useState('');
+  const [adminVerifiedPin, setAdminVerifiedPin] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem(ADMIN_CRM_SESSION_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return typeof parsed?.pin === 'string' ? parsed.pin : '';
+      }
+    } catch {
+      // Ignore storage errors
+    }
+    return '';
+  });
   const [crmSyncing, setCrmSyncing] = useState(false);
   const [isAuthBusy, setIsAuthBusy] = useState(false);
   const [isRegBusy, setIsRegBusy] = useState(false);
@@ -829,8 +851,10 @@ export default function App() {
       : 'unsupported'
   );
 
-  // Pantalla inicial de arranque 5-4-3-2-1 antes del portal
-  const [introSplash, setIntroSplash] = useState<boolean>(true);
+  // Pantalla inicial de arranque 5-4-3-2-1 (solo en portada inicial, no al recargar sesión activa)
+  const [introSplash, setIntroSplash] = useState<boolean>(
+    () => !state.hasStarted && !adminVerifiedPin
+  );
   const [introCount, setIntroCount] = useState<number>(5);
   const [launchModal, setLaunchModal] = useState<{
     title: string;
@@ -867,7 +891,18 @@ export default function App() {
   // Estados para Inscripción (Hazte socio) y CRM Admin secreto (3 clicks en logo)
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [showAdminCrmModal, setShowAdminCrmModal] = useState(false);
+  const [showAdminCrmModal, setShowAdminCrmModal] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(ADMIN_CRM_SESSION_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return Boolean(parsed?.isOpen && parsed?.pin);
+      }
+    } catch {
+      // Ignore storage errors
+    }
+    return false;
+  });
   const [adminPinModal, setAdminPinModal] = useState(false);
   const [adminPinInput, setAdminPinInput] = useState('');
   const [adminPinError, setAdminPinError] = useState('');
@@ -883,6 +918,15 @@ export default function App() {
         headers: { 'x-admin-pin': pin },
       });
       if (!res.ok) {
+        if (res.status === 401) {
+          try {
+            localStorage.removeItem(ADMIN_CRM_SESSION_KEY);
+          } catch {
+            // Ignore storage errors
+          }
+          setShowAdminCrmModal(false);
+          setAdminVerifiedPin('');
+        }
         let errMsg = `Error HTTP ${res.status} al cargar clientes.`;
         try {
           const errData = await res.json();
@@ -952,6 +996,15 @@ export default function App() {
     }
 
     if (verified) {
+      try {
+        localStorage.setItem(
+          ADMIN_CRM_SESSION_KEY,
+          JSON.stringify({ isOpen: true, pin })
+        );
+      } catch {
+        // Ignore storage errors
+      }
+      setIntroSplash(false);
       setAdminVerifiedPin(pin);
       setAdminPinModal(false);
       setAdminPinInput('');
@@ -1269,11 +1322,27 @@ export default function App() {
 
     setState((prev: any) => {
       if (progressData && typeof progressData === 'object') {
+        const {
+          view: _omitView,
+          hasStarted: _omitStarted,
+          sel: _omitSel,
+          del: _omitDel,
+          subscribers: _omitSubs,
+          ...cloudProgress
+        } = progressData;
         return {
           ...prev,
-          ...progressData,
+          ...cloudProgress,
           subscribers: prev.subscribers,
-          ...(moveToHoy ? { view: 'hoy', hasStarted: true } : {}),
+          ...(moveToHoy
+            ? { view: 'hoy', hasStarted: true }
+            : prev.hasStarted
+            ? {
+                view:
+                  prev.view && prev.view !== 'welcome' ? prev.view : 'hoy',
+                hasStarted: true,
+              }
+            : {}),
         };
       }
       if (isSwitchingToFreshUser) {
@@ -1298,6 +1367,12 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (showAdminCrmModal && adminVerifiedPin) {
+      void fetchAdminSubscribers(adminVerifiedPin);
+    }
+  }, []);
+
+  useEffect(() => {
     let active = true;
     const initCloud = async () => {
       try {
@@ -1312,7 +1387,12 @@ export default function App() {
           });
 
           if (sbReady && active) {
-            setState((prev: any) => ({ ...prev, subscribers: [] }));
+            setState((prev: any) => ({
+              ...prev,
+              subscribers: (prev.subscribers || []).filter((s: any) =>
+                Boolean(s.dbId)
+              ),
+            }));
           }
 
           if (sbReady && sessionToken) {
@@ -1335,6 +1415,11 @@ export default function App() {
                 } catch {
                   // Ignore storage errors
                 }
+                setState((prev: any) => ({
+                  ...prev,
+                  view: 'welcome',
+                  hasStarted: false,
+                }));
               }
             }
           }
@@ -1370,7 +1455,14 @@ export default function App() {
 
     if (cloudStatus.supabaseConfigured && sessionToken) {
       const timer = setTimeout(() => {
-        const { subscribers: _omitSubscribers, ...userProgressPayload } = state;
+        const {
+          subscribers: _omitSubscribers,
+          view: _omitView,
+          hasStarted: _omitHasStarted,
+          sel: _omitSel,
+          del: _omitDel,
+          ...userProgressPayload
+        } = state;
         void fetch('/api/progress', {
           method: 'POST',
           headers: {
@@ -5159,7 +5251,15 @@ export default function App() {
           onUpdateSubscribers={(nextSubscribers) =>
             setState((prev: any) => ({ ...prev, subscribers: nextSubscribers }))
           }
-          onClose={() => setShowAdminCrmModal(false)}
+          onClose={() => {
+            try {
+              localStorage.removeItem(ADMIN_CRM_SESSION_KEY);
+            } catch {
+              // Ignore storage errors
+            }
+            setShowAdminCrmModal(false);
+            setAdminVerifiedPin('');
+          }}
           onNotify={say}
           todayStr={ymd(new Date())}
           isSyncing={crmSyncing}
