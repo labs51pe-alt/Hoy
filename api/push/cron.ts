@@ -301,6 +301,7 @@ export default async function handler(req: any, res: any) {
     return res.status(500).json({
       ok: false,
       error: err?.message || 'Error ejecutando cron de notificaciones push.',
+      stack: err?.stack || String(err),
     });
   }
 }
