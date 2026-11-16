@@ -41,6 +41,7 @@ import {
   Eye,
   EyeOff,
   FileText,
+  Sparkles,
 } from 'lucide-react';
 import AdminCrmModal, {
   PaymentEntry,
@@ -2440,14 +2441,22 @@ export default function App() {
 
             <button
               onClick={() => setShowRegisterModal(true)}
-              className={`w-full min-h-[48px] px-4 rounded-xl border text-sm font-bold flex items-center justify-center gap-2 transition active:scale-[0.98] cursor-pointer whitespace-nowrap ${
-                isDark
-                  ? 'bg-[#1B262E] border-[#2B3A45] text-[#E7EEF2] hover:border-[#7F8DF2]'
-                  : 'bg-white/12 border-white/25 text-white hover:bg-white/20'
-              }`}
+              className="w-full min-h-[54px] px-5 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white font-extrabold text-sm sm:text-base flex items-center justify-between gap-3 transition active:scale-[0.98] cursor-pointer shadow-xl shadow-amber-500/25 border border-white/20"
             >
-              <Zap className="w-4 h-4 text-[#E6B04A] shrink-0" />
-              <span>Hazte socio / Empieza ya</span>
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="w-9 h-9 rounded-xl bg-white/22 flex items-center justify-center shrink-0 shadow-sm">
+                  <Sparkles className="w-5 h-5 text-white animate-pulse" />
+                </span>
+                <div className="text-left min-w-0">
+                  <div className="text-xs sm:text-sm font-black tracking-wide uppercase text-white truncate">
+                    ¡Regístrate, comienza hoy es gratis!
+                  </div>
+                  <div className="text-[11px] font-bold text-white/90">
+                    7 días de prueba sin compromiso
+                  </div>
+                </div>
+              </div>
+              <ArrowRight className="w-4 h-4 text-white shrink-0" />
             </button>
           </footer>
         </motion.div>
@@ -5329,14 +5338,15 @@ export default function App() {
           >
             <div className="flex items-start justify-between gap-3">
               <div>
-                <span className="text-xs font-extrabold uppercase text-[var(--acc)] tracking-wider">
-                  Membresía HOY
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[var(--acc)]/12 text-[var(--acc)] text-[11px] font-extrabold uppercase tracking-wider mb-1">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Prueba gratis x 7 días</span>
                 </span>
                 <h3 className="text-xl font-extrabold tracking-tight mt-0.5">
-                  Únete a HOY
+                  Comienza tu acceso a HOY
                 </h3>
                 <p className="text-xs text-[var(--mute)] mt-1">
-                  Completa tus datos para recibir las instrucciones de acceso por WhatsApp.
+                  Ingresa tus datos y obtén acceso inmediato por 7 días sin compromiso. Te enviaremos tu confirmación por WhatsApp.
                 </p>
               </div>
               <button
@@ -5537,7 +5547,7 @@ export default function App() {
                 }}
                 className="flex-1 min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-xl cursor-pointer hover:opacity-95 disabled:opacity-60 transition"
               >
-                {isRegBusy ? 'Registrando...' : 'Enviar y ver pago por WhatsApp'}
+                {isRegBusy ? 'Activando...' : '¡Comenzar mis 7 días gratis!'}
               </button>
               <button
                 onClick={() => setShowRegisterModal(false)}

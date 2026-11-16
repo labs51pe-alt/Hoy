@@ -130,7 +130,8 @@ export async function triggerN8nWhatsApp(
       | 'instrucciones_pago'
       | 'aprobacion_bienvenida'
       | 'otp_login'
-      | 'recordatorio_pago';
+      | 'recordatorio_pago'
+      | 'inicio_prueba';
     name: string;
     plan?: string;
     amountPen?: number;

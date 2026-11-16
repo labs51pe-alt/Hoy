@@ -73,6 +73,7 @@ export default async function handler(req: any, res: any) {
       });
     }
 
+    const trialEndsAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     let profile = existing;
 
     if (existing) {
@@ -85,8 +86,9 @@ export default async function handler(req: any, res: any) {
           city,
           plan,
           amount_pen: amountPen,
-          status: 'pendiente',
-          payment_status: 'pendiente',
+          status: existing.status === 'activo' ? 'activo' : 'activo',
+          payment_status: existing.payment_status === 'pagado' ? 'pagado' : 'trial',
+          trial_ends_at: existing.trial_ends_at || trialEndsAt,
         })
         .eq('id', existing.id)
         .select('*')
@@ -106,11 +108,12 @@ export default async function handler(req: any, res: any) {
           phone_e164: phone.e164,
           city,
           role: 'user',
-          status: 'pendiente',
+          status: 'activo',
           plan,
           amount_pen: amountPen,
-          payment_method: 'Por definir',
-          payment_status: 'pendiente',
+          payment_method: 'Prueba 7 días',
+          payment_status: 'trial',
+          trial_ends_at: trialEndsAt,
         })
         .select('*')
         .single();
@@ -121,14 +124,12 @@ export default async function handler(req: any, res: any) {
       profile = inserted;
     }
 
-    const messagePreview = `Hola ${name}, gracias por unirte a HOY (Plan ${plan} - S/ ${amountPen.toFixed(
-      2
-    )}). Realiza tu pago por Yape/Plin y envía tu comprobante para activar tu acceso.`;
+    const messagePreview = `¡Hola ${name}! Tu prueba gratuita de 7 días en HOY ya está activa. Disfruta de tu sistema de ejecución diaria (Plan ${plan}). ¡A por tu día!`;
 
     const waResult = await triggerN8nWhatsApp(supabase, {
       profileId: profile.id,
       phoneE164: phone.e164,
-      eventType: 'instrucciones_pago',
+      eventType: 'inicio_prueba',
       name,
       plan,
       amountPen,
