@@ -11,6 +11,8 @@ import sessionHandler from './api/auth/session.ts';
 import progressHandler from './api/progress.ts';
 import adminVerifyHandler from './api/admin/verify.ts';
 import adminSubscribersHandler from './api/admin/subscribers.ts';
+import pushSubscribeHandler from './api/push/subscribe.ts';
+import pushCronHandler from './api/push/cron.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,6 +48,8 @@ async function startServer() {
   app.all('/api/progress', wrap(progressHandler));
   app.all('/api/admin/verify', wrap(adminVerifyHandler));
   app.all('/api/admin/subscribers', wrap(adminSubscribersHandler));
+  app.all('/api/push/subscribe', wrap(pushSubscribeHandler));
+  app.all('/api/push/cron', wrap(pushCronHandler));
 
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');

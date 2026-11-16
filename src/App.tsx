@@ -40,12 +40,20 @@ import {
   Calendar,
   Eye,
   EyeOff,
+  FileText,
 } from 'lucide-react';
 import AdminCrmModal, {
   PaymentEntry,
   SubscriberPlan,
   SubscriberRecord,
 } from './components/AdminCrmModal';
+import ProgressReportModal from './components/ProgressReportModal';
+import {
+  registerWebPushSubscription,
+  sendTestWebPush,
+  unregisterWebPushSubscription,
+  WebPushStatus,
+} from './lib/pushNotifications';
 
 // ==========================================
 // CONFIGURACIÓN Y CONSTANTES
@@ -106,6 +114,82 @@ const PRAISE_MESSAGES = [
   '¡Así se hace! Un paso más hoy.',
   '¡Muy bien! La disciplina construye resultados.',
 ];
+
+const AVATAR_EMOJIS = [
+  { emoji: '🚀', label: 'Impulso' },
+  { emoji: '🔥', label: 'Disciplina' },
+  { emoji: '⚡', label: 'Enfoque' },
+  { emoji: '🎯', label: 'Meta' },
+  { emoji: '🦁', label: 'Coraje' },
+  { emoji: '🏔️', label: 'Cima' },
+  { emoji: '💎', label: 'Constancia' },
+  { emoji: '🏆', label: 'Victoria' },
+  { emoji: '🌟', label: 'Energía' },
+  { emoji: '🧠', label: 'Claridad' },
+] as const;
+
+const ACCENT_PALETTES = [
+  {
+    id: 'cobalt',
+    name: 'Azul HOY',
+    light: '#3B4CCA',
+    lightHover: '#3241B5',
+    lightInk: '#FFFFFF',
+    dark: '#7F8DF2',
+    darkHover: '#909DF6',
+    darkInk: '#10161B',
+  },
+  {
+    id: 'emerald',
+    name: 'Esmeralda',
+    light: '#15803D',
+    lightHover: '#166534',
+    lightInk: '#FFFFFF',
+    dark: '#4ADE80',
+    darkHover: '#86EFAC',
+    darkInk: '#0D1912',
+  },
+  {
+    id: 'amber',
+    name: 'Ámbar',
+    light: '#D97706',
+    lightHover: '#B45309',
+    lightInk: '#FFFFFF',
+    dark: '#FBBF24',
+    darkHover: '#FCD34D',
+    darkInk: '#1C1404',
+  },
+  {
+    id: 'crimson',
+    name: 'Carmesí',
+    light: '#DC2626',
+    lightHover: '#B91C1C',
+    lightInk: '#FFFFFF',
+    dark: '#F87171',
+    darkHover: '#FCA5A5',
+    darkInk: '#1F0A0A',
+  },
+  {
+    id: 'violet',
+    name: 'Violeta',
+    light: '#6D28D9',
+    lightHover: '#5B21B6',
+    lightInk: '#FFFFFF',
+    dark: '#A78BFA',
+    darkHover: '#C4B5FD',
+    darkInk: '#140C24',
+  },
+  {
+    id: 'teal',
+    name: 'Turquesa',
+    light: '#0F766E',
+    lightHover: '#115E59',
+    lightInk: '#FFFFFF',
+    dark: '#2DD4BF',
+    darkHover: '#5EEAD4',
+    darkInk: '#071B19',
+  },
+] as const;
 
 // ==========================================
 // LOGOTIPO VECTORIAL ARQUITECTÓNICO HOY
@@ -490,6 +574,9 @@ export default function App() {
       view: 'welcome',
       hasStarted: false,
       theme: 'light',
+      avatarEmoji: '🚀',
+      accentColor: 'cobalt',
+      welcomeSeen: false,
       f: 'todos',
       days: [] as string[],
       same: true,
@@ -717,18 +804,32 @@ export default function App() {
     return defaultState;
   });
 
-  // Sincronizar tema claro / oscuro con atributo HTML y barra de navegador
+  // Sincronizar tema claro/oscuro + color personalizado de perfil
   useEffect(() => {
     const currentTheme = state.theme === 'dark' ? 'dark' : 'light';
-    document.documentElement.setAttribute('data-theme', currentTheme);
+    const root = document.documentElement;
+    root.setAttribute('data-theme', currentTheme);
+
+    const palette =
+      ACCENT_PALETTES.find((p) => p.id === state.accentColor) ||
+      ACCENT_PALETTES[0];
+    const acc = currentTheme === 'dark' ? palette.dark : palette.light;
+    const accHover =
+      currentTheme === 'dark' ? palette.darkHover : palette.lightHover;
+    const accInk = currentTheme === 'dark' ? palette.darkInk : palette.lightInk;
+
+    root.style.setProperty('--acc', acc);
+    root.style.setProperty('--acc-hover', accHover);
+    root.style.setProperty('--accink', accInk);
+
     const metaTheme = document.querySelector('meta[name="theme-color"]');
     if (metaTheme) {
       metaTheme.setAttribute(
         'content',
-        currentTheme === 'dark' ? '#121A20' : '#3B4CCA'
+        currentTheme === 'dark' ? '#121A20' : acc
       );
     }
-  }, [state.theme]);
+  }, [state.theme, state.accentColor]);
 
   const toggleTheme = () => {
     setState((prev: any) => ({
@@ -761,6 +862,7 @@ export default function App() {
     plan?: string;
   } | null>(null);
   const [showConfigModal, setShowConfigModal] = useState(false);
+  const [showPdfReportModal, setShowPdfReportModal] = useState(false);
   const [adminVerifiedPin, setAdminVerifiedPin] = useState<string>(() => {
     try {
       const saved = localStorage.getItem(ADMIN_CRM_SESSION_KEY);
@@ -850,6 +952,7 @@ export default function App() {
       ? Notification.permission
       : 'unsupported'
   );
+  const [webPushStatus, setWebPushStatus] = useState<WebPushStatus | null>(null);
 
   // Pantalla inicial de arranque 5-4-3-2-1 (solo en portada inicial, no al recargar sesión activa)
   const [introSplash, setIntroSplash] = useState<boolean>(
@@ -1350,6 +1453,9 @@ export default function App() {
           ...prev,
           view: moveToHoy ? 'hoy' : prev.view,
           hasStarted: moveToHoy ? true : prev.hasStarted,
+          avatarEmoji: '🚀',
+          accentColor: 'cobalt',
+          welcomeSeen: false,
           same: true,
           re: 'semana',
           rut: { d: ymd(new Date()), x: [] },
@@ -1828,6 +1934,27 @@ export default function App() {
     state.morningPromptedDate,
   ]);
 
+  // Sincronizar suscripción Web Push automáticamente si ya tiene alertas y sesión activas
+  useEffect(() => {
+    if (!sessionToken || !state.alertsEnabled) return;
+    if (
+      typeof window === 'undefined' ||
+      !('Notification' in window) ||
+      Notification.permission !== 'granted'
+    ) {
+      return;
+    }
+    let cancelled = false;
+    registerWebPushSubscription(sessionToken).then((res) => {
+      if (!cancelled) {
+        setWebPushStatus(res.status);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionToken, state.alertsEnabled]);
+
   const enableAlerts = async () => {
     let perm =
       typeof window !== 'undefined' && 'Notification' in window
@@ -1850,8 +1977,15 @@ export default function App() {
     if (state.alertsSound !== false) playAlertChime();
 
     if (perm === 'granted') {
-      say('Alertas activadas con notificaciones del sistema.');
+      const pushRes = await registerWebPushSubscription(sessionToken);
+      setWebPushStatus(pushRes.status);
+      if (pushRes.ok) {
+        say('Alertas activadas (incluye segundo plano).');
+      } else {
+        say('Alertas activadas con notificaciones del sistema.');
+      }
     } else if (perm === 'denied') {
+      setWebPushStatus('denied');
       say('Alertas en pantalla activadas (notificaciones bloqueadas en el navegador).');
     } else {
       say('Alertas en pantalla activadas.');
@@ -2571,8 +2705,40 @@ export default function App() {
                         transition={{ duration: 0.18 }}
                         className="grid grid-cols-1 md:grid-cols-12 gap-5 items-start"
                       >
-                        {/* Columna Izquierda: Racha + Rutina Matutina */}
+                        {/* Columna Izquierda: Saludo de perfil + Racha + Rutina Matutina */}
                         <div className="md:col-span-6 space-y-5">
+                          {/* Tarjeta compacta de identidad personal */}
+                          <section className="bg-[var(--card)] border border-[var(--line)] rounded-2xl px-4 py-3.5 shadow-sm flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <button
+                                onClick={() => setShowConfigModal(true)}
+                                title="Personalizar emoji y color"
+                                className="w-11 h-11 rounded-2xl bg-[var(--acc)]/14 border border-[var(--acc)]/30 flex items-center justify-center text-2xl shrink-0 cursor-pointer hover:scale-105 transition"
+                              >
+                                {state.avatarEmoji || '🚀'}
+                              </button>
+                              <div className="min-w-0">
+                                <p className="text-sm font-extrabold text-[var(--ink)] truncate">
+                                  {activeProfile?.name
+                                    ? `¡Hola, ${activeProfile.name.split(' ')[0]}!`
+                                    : '¡Hola! Tu día en HOY'}
+                                </p>
+                                <p className="text-[11px] font-semibold text-[var(--mute)] truncate">
+                                  {AVATAR_EMOJIS.find(
+                                    (a) => a.emoji === (state.avatarEmoji || '🚀')
+                                  )?.label || 'Impulso'}{' '}
+                                  · {formattedToday()}
+                                </p>
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => setShowConfigModal(true)}
+                              className="min-h-[34px] px-3 rounded-xl border border-[var(--line)] bg-[var(--bg)] text-[11px] font-bold text-[var(--mute)] hover:text-[var(--ink)] hover:border-[var(--acc)] transition cursor-pointer shrink-0"
+                            >
+                              Personalizar
+                            </button>
+                          </section>
+
                           {/* Tarjeta de Racha Semanal */}
                           <section className="bg-[var(--card)] border border-[var(--line)] rounded-2xl p-5 shadow-sm">
                             <div className="flex items-center justify-between gap-4">
@@ -4325,9 +4491,11 @@ export default function App() {
                 onClick={() => {
                   if (state.alertsEnabled) {
                     setState((prev: any) => ({ ...prev, alertsEnabled: false }));
+                    setWebPushStatus(null);
+                    void unregisterWebPushSubscription(sessionToken);
                     say('Alertas desactivadas.');
                   } else {
-                    enableAlerts();
+                    void enableAlerts();
                   }
                 }}
                 className={`w-full min-h-[52px] px-4 rounded-2xl border flex items-center justify-between font-bold text-sm transition cursor-pointer ${
@@ -4436,6 +4604,17 @@ export default function App() {
                   Las notificaciones del navegador están bloqueadas en la configuración del sitio; verás las alertas en pantalla mientras HOY esté abierta.
                 </p>
               )}
+              {state.alertsEnabled && notifPermission === 'granted' && (
+                <p className="text-[11px] text-[var(--mute)] pt-1">
+                  {webPushStatus === 'active'
+                    ? 'Web Push en segundo plano activo y sincronizado con este dispositivo.'
+                    : webPushStatus === 'no-session'
+                    ? 'Inicia sesión con tu cuenta para recibir alertas también con la app cerrada.'
+                    : webPushStatus === 'unconfigured'
+                    ? 'Avisos activos con la app abierta (falta configurar claves VAPID en servidor para segundo plano).'
+                    : 'Notificaciones del sistema activadas.'}
+                </p>
+              )}
             </div>
 
             <div className="flex gap-2.5">
@@ -4458,6 +4637,9 @@ export default function App() {
                     demoItem.title,
                     'hoy-test'
                   );
+                  if (sessionToken) {
+                    void sendTestWebPush(sessionToken);
+                  }
                   setShowAlertsModal(false);
                 }}
                 className="flex-1 min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-bold text-sm rounded-xl cursor-pointer hover:opacity-95 transition"
@@ -4653,12 +4835,12 @@ export default function App() {
           >
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-3">
-                <div className="w-11 h-11 rounded-2xl bg-[var(--acc)]/12 text-[var(--acc)] flex items-center justify-center shrink-0">
-                  <ShieldCheck className="w-5 h-5" />
+                <div className="w-11 h-11 rounded-2xl bg-[var(--acc)]/14 border border-[var(--acc)]/30 flex items-center justify-center text-2xl shrink-0">
+                  {state.avatarEmoji || '🚀'}
                 </div>
                 <div>
                   <h3 className="text-lg font-extrabold tracking-tight">
-                    Cuenta y Respaldo
+                    Mi Perfil y Respaldo
                   </h3>
                   <p className="text-xs text-[var(--mute)] mt-0.5">
                     {cloudStatus.supabaseConfigured
@@ -4694,31 +4876,88 @@ export default function App() {
               </div>
             )}
 
+            {/* Personalización de Emoji y Color de Perfil */}
+            <div className="space-y-3.5 rounded-2xl border border-[var(--line)] bg-[var(--bg)]/60 p-4">
+              <div>
+                <p className="text-xs font-extrabold text-[var(--ink)] mb-2">
+                  Tu emblema inspirador
+                </p>
+                <div className="grid grid-cols-5 gap-1.5">
+                  {AVATAR_EMOJIS.map((item) => {
+                    const active = (state.avatarEmoji || '🚀') === item.emoji;
+                    return (
+                      <button
+                        key={item.emoji}
+                        type="button"
+                        onClick={() =>
+                          setState((prev: any) => ({
+                            ...prev,
+                            avatarEmoji: item.emoji,
+                          }))
+                        }
+                        className={`py-2 px-1 rounded-xl border text-center transition cursor-pointer ${
+                          active
+                            ? 'border-[var(--acc)] bg-[var(--acc)]/14 shadow-sm'
+                            : 'border-[var(--line)] bg-[var(--card)] hover:border-[var(--acc)]/50'
+                        }`}
+                      >
+                        <div className="text-xl leading-none">{item.emoji}</div>
+                        <div className="text-[9px] font-bold text-[var(--mute)] mt-1 truncate">
+                          {item.label}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs font-extrabold text-[var(--ink)] mb-2">
+                  Color de tu app
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  {ACCENT_PALETTES.map((pal) => {
+                    const active = (state.accentColor || 'cobalt') === pal.id;
+                    const swatch = isDark ? pal.dark : pal.light;
+                    return (
+                      <button
+                        key={pal.id}
+                        type="button"
+                        onClick={() =>
+                          setState((prev: any) => ({
+                            ...prev,
+                            accentColor: pal.id,
+                          }))
+                        }
+                        className={`min-h-[38px] px-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 transition cursor-pointer ${
+                          active
+                            ? 'border-[var(--acc)] bg-[var(--card)] text-[var(--ink)] shadow-sm'
+                            : 'border-[var(--line)] bg-[var(--card)] text-[var(--mute)] hover:text-[var(--ink)]'
+                        }`}
+                      >
+                        <span
+                          className="w-4 h-4 rounded-full shrink-0 border border-black/10"
+                          style={{ backgroundColor: swatch }}
+                        />
+                        <span className="truncate text-[11px]">{pal.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
             <div className="space-y-2.5">
               <button
+                type="button"
                 onClick={() => {
-                  try {
-                    const { subscribers: _omit, ...exportPayload } = state;
-                    const blob = new Blob([JSON.stringify(exportPayload, null, 2)], {
-                      type: 'application/json;charset=utf-8',
-                    });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `hoy-respaldo-${ymd(new Date())}.json`;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                    say('Respaldo descargado.');
-                  } catch {
-                    say('No se pudo exportar el respaldo.');
-                  }
+                  setShowConfigModal(false);
+                  setShowPdfReportModal(true);
                 }}
-                className="w-full min-h-[46px] border border-[var(--line)] bg-[var(--bg)] font-bold text-xs rounded-xl hover:border-[var(--acc)] cursor-pointer flex items-center justify-center gap-2 transition"
+                className="w-full min-h-[46px] bg-[var(--acc)] text-[var(--accink)] font-bold text-xs sm:text-sm rounded-xl hover:opacity-95 cursor-pointer flex items-center justify-center gap-2 transition"
               >
-                <Download className="w-4 h-4" />
-                <span>Descargar respaldo JSON</span>
+                <FileText className="w-4 h-4" />
+                <span>Ver y descargar Resumen en PDF</span>
               </button>
 
               {activeProfile && (
@@ -4733,11 +4972,194 @@ export default function App() {
 
               <button
                 onClick={() => setShowConfigModal(false)}
-                className="w-full min-h-[46px] bg-[var(--acc)] text-[var(--accink)] font-bold text-sm rounded-xl hover:opacity-95 cursor-pointer transition"
+                className="w-full min-h-[44px] border border-[var(--line)] bg-[var(--bg)] font-bold text-xs rounded-xl hover:border-[var(--acc)] cursor-pointer transition"
               >
                 Listo
               </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    const { subscribers: _omit, ...exportPayload } = state;
+                    const blob = new Blob([JSON.stringify(exportPayload, null, 2)], {
+                      type: 'application/json;charset=utf-8',
+                    });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `hoy-respaldo-${ymd(new Date())}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    say('Copia técnica JSON descargada.');
+                  } catch {
+                    say('No se pudo exportar la copia.');
+                  }
+                }}
+                className="w-full py-1.5 text-[11px] font-semibold text-[var(--mute)] hover:text-[var(--ink)] cursor-pointer flex items-center justify-center gap-1.5 transition"
+              >
+                <Download className="w-3 h-3" />
+                <span>Exportar copia técnica (.json)</span>
+              </button>
             </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Modal Resumen Visual en PDF */}
+      {(() => {
+        const activeEmojiObj =
+          AVATAR_EMOJIS.find((e) => e.emoji === (state.avatarEmoji || '🚀')) ||
+          AVATAR_EMOJIS[0];
+        const activePaletteObj =
+          ACCENT_PALETTES.find((p) => p.id === (state.accentColor || 'cobalt')) ||
+          ACCENT_PALETTES[0];
+        const daysArr = Array.isArray(state.days) ? state.days : [];
+        const last7 = Array.from({ length: 7 }, (_, idx) => {
+          const offset = 6 - idx;
+          const dateStr = back(offset);
+          return {
+            date: dateStr,
+            letter: shortDayLetter(offset),
+            done: daysArr.includes(dateStr),
+          };
+        });
+        const todayStr = ymd(new Date());
+        return (
+          <ProgressReportModal
+            isOpen={showPdfReportModal}
+            onClose={() => setShowPdfReportModal(false)}
+            userName={activeProfile?.name || 'Mi Perfil HOY'}
+            userPhone={activeProfile?.phone}
+            userPlan={activeProfile?.plan || 'Personal'}
+            avatarEmoji={activeEmojiObj.emoji}
+            avatarLabel={activeEmojiObj.label}
+            accentHex={activePaletteObj.light}
+            streakCount={streakCount}
+            daysCompletedCount={daysArr.length}
+            last7Days={last7}
+            todayDone={rutDoneCount}
+            todayTotal={currentRoutineList.length}
+            todayDateLabel={formattedToday()}
+            todayYmd={todayStr}
+            todayPlan={state.plannedDays?.[todayStr] || null}
+            projects={projectsList}
+            routines={routinesObj}
+            onExportSuccess={(msg) => say(msg)}
+          />
+        );
+      })()}
+
+      {/* Bienvenida Personalizada de Primer Ingreso */}
+      {state.hasStarted && state.view !== 'welcome' && !state.welcomeSeen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/65 backdrop-blur-sm p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 12 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            className="w-full max-w-md rounded-3xl bg-[var(--card)] text-[var(--ink)] p-6 sm:p-7 shadow-2xl border border-[var(--line)] max-h-[92dvh] overflow-y-auto space-y-5"
+          >
+            <div className="text-center space-y-2.5">
+              <div className="w-16 h-16 mx-auto rounded-3xl bg-[var(--acc)]/14 border-2 border-[var(--acc)]/35 flex items-center justify-center text-4xl shadow-sm">
+                {state.avatarEmoji || '🚀'}
+              </div>
+              <span className="inline-block text-[11px] font-extrabold uppercase tracking-wider text-[var(--acc)]">
+                Tu espacio diario
+              </span>
+              <h3 className="text-2xl font-extrabold tracking-tight">
+                {activeProfile?.name
+                  ? `¡Bienvenido a HOY, ${activeProfile.name.split(' ')[0]}!`
+                  : '¡Bienvenido a HOY!'}
+              </h3>
+              <p className="text-xs sm:text-sm text-[var(--mute)] leading-relaxed">
+                Cada gran meta se construye un día a la vez. Elige un emblema que te inspire y el color con el que te sientas más cómodo.
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <p className="text-xs font-extrabold text-[var(--ink)] mb-2">
+                  1. Elige tu emoji inspirador
+                </p>
+                <div className="grid grid-cols-5 gap-1.5">
+                  {AVATAR_EMOJIS.map((item) => {
+                    const active = (state.avatarEmoji || '🚀') === item.emoji;
+                    return (
+                      <button
+                        key={item.emoji}
+                        type="button"
+                        onClick={() =>
+                          setState((prev: any) => ({
+                            ...prev,
+                            avatarEmoji: item.emoji,
+                          }))
+                        }
+                        className={`py-2.5 px-1 rounded-2xl border text-center transition cursor-pointer ${
+                          active
+                            ? 'border-[var(--acc)] bg-[var(--acc)]/14 scale-[1.03] shadow-sm'
+                            : 'border-[var(--line)] bg-[var(--bg)] hover:border-[var(--acc)]/50'
+                        }`}
+                      >
+                        <div className="text-2xl leading-none">{item.emoji}</div>
+                        <div className="text-[10px] font-bold text-[var(--mute)] mt-1 truncate">
+                          {item.label}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs font-extrabold text-[var(--ink)] mb-2">
+                  2. Elige el color de tu app
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  {ACCENT_PALETTES.map((pal) => {
+                    const active = (state.accentColor || 'cobalt') === pal.id;
+                    const swatch = isDark ? pal.dark : pal.light;
+                    return (
+                      <button
+                        key={pal.id}
+                        type="button"
+                        onClick={() =>
+                          setState((prev: any) => ({
+                            ...prev,
+                            accentColor: pal.id,
+                          }))
+                        }
+                        className={`min-h-[42px] px-2.5 rounded-2xl border text-xs font-bold flex items-center gap-2 transition cursor-pointer ${
+                          active
+                            ? 'border-[var(--acc)] bg-[var(--acc)]/12 text-[var(--ink)] shadow-sm'
+                            : 'border-[var(--line)] bg-[var(--bg)] text-[var(--mute)] hover:text-[var(--ink)]'
+                        }`}
+                      >
+                        <span
+                          className="w-4 h-4 rounded-full shrink-0 border border-black/10"
+                          style={{ backgroundColor: swatch }}
+                        />
+                        <span className="truncate text-[11px]">{pal.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                setState((prev: any) => ({ ...prev, welcomeSeen: true }));
+                const firstName = activeProfile?.name
+                  ? `, ${activeProfile.name.split(' ')[0]}`
+                  : '';
+                say(`¡Con todo${firstName}! Empecemos hoy ${state.avatarEmoji || '🚀'}`);
+              }}
+              className="w-full min-h-[50px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-2xl hover:opacity-95 cursor-pointer transition shadow-md"
+            >
+              ¡Empezar mi día!
+            </button>
           </motion.div>
         </div>
       )}
