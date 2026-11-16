@@ -5189,7 +5189,11 @@ export default function App() {
                 say('Servidor sin Supabase configurado: cliente no guardado en la nube.');
                 return;
               }
-              if (data.subscriber) return data.subscriber;
+              return {
+                subscriber: data.subscriber,
+                whatsappSent: data.whatsappSent,
+                whatsappError: data.whatsappError,
+              };
             } catch {
               say('No se pudo conectar con /api/admin/subscribers.');
             }
@@ -5223,7 +5227,11 @@ export default function App() {
                 void fetchAdminSubscribers(adminVerifiedPin || '1982');
                 return;
               }
-              if (data.subscriber) return data.subscriber;
+              return {
+                subscriber: data.subscriber,
+                whatsappSent: data.whatsappSent,
+                whatsappError: data.whatsappError,
+              };
             } catch {
               say('No se pudo conectar con /api/admin/subscribers.');
             }
@@ -5257,10 +5265,11 @@ export default function App() {
                 void fetchAdminSubscribers(adminVerifiedPin || '1982');
                 return;
               }
-              if (data.whatsappSent === false) {
-                say('Cliente aprobado en Supabase, pero n8n no respondió al webhook de WhatsApp.');
-              }
-              if (data.subscriber) return data.subscriber;
+              return {
+                subscriber: data.subscriber,
+                whatsappSent: data.whatsappSent,
+                whatsappError: data.whatsappError,
+              };
             } catch {
               say('No se pudo conectar con /api/admin/subscribers.');
             }
@@ -5294,13 +5303,17 @@ export default function App() {
                 void fetchAdminSubscribers(adminVerifiedPin || '1982');
                 return;
               }
-              if (data.subscriber) return data.subscriber;
+              return {
+                subscriber: data.subscriber,
+                whatsappSent: data.whatsappSent,
+                whatsappError: data.whatsappError,
+              };
             } catch {
               say('No se pudo conectar con /api/admin/subscribers.');
             }
           }}
           onDeleteSubscriber={async (sub) => {
-            if (!sub.dbId) return;
+            if (!sub.dbId) return true;
             try {
               const res = await fetch(
                 `/api/admin/subscribers?id=${encodeURIComponent(sub.dbId)}`,
@@ -5314,7 +5327,71 @@ export default function App() {
               if (!res.ok) {
                 say('No se pudo eliminar el cliente en Supabase.');
                 void fetchAdminSubscribers(adminVerifiedPin || '1982');
+                return false;
               }
+              return true;
+            } catch {
+              say('No se pudo conectar con /api/admin/subscribers.');
+              return false;
+            }
+          }}
+          onSendAccess={async (sub) => {
+            if (!sub.dbId) {
+              say('Este registro es local y no tiene ID de Supabase.');
+              return;
+            }
+            try {
+              const res = await fetch('/api/admin/subscribers', {
+                method: 'PATCH',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-admin-pin': adminVerifiedPin || '1982',
+                },
+                body: JSON.stringify({
+                  dbId: sub.dbId,
+                  action: 'send_access',
+                }),
+              });
+              const data = await res.json().catch(() => null);
+              if (!res.ok || !data) {
+                say(data?.error || `Error (${res.status}) enviando acceso.`);
+                return;
+              }
+              return {
+                whatsappSent: data.whatsappSent,
+                whatsappError: data.whatsappError,
+              };
+            } catch {
+              say('No se pudo conectar con /api/admin/subscribers.');
+            }
+          }}
+          onSendOtp={async (sub) => {
+            if (!sub.dbId) {
+              say('Este registro es local y no tiene ID de Supabase.');
+              return;
+            }
+            try {
+              const res = await fetch('/api/admin/subscribers', {
+                method: 'PATCH',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-admin-pin': adminVerifiedPin || '1982',
+                },
+                body: JSON.stringify({
+                  dbId: sub.dbId,
+                  action: 'send_otp',
+                }),
+              });
+              const data = await res.json().catch(() => null);
+              if (!res.ok || !data) {
+                say(data?.error || `Error (${res.status}) generando OTP.`);
+                return;
+              }
+              return {
+                whatsappSent: data.whatsappSent,
+                whatsappError: data.whatsappError,
+                devOtp: data.devOtp,
+              };
             } catch {
               say('No se pudo conectar con /api/admin/subscribers.');
             }

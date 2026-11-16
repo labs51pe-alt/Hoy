@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import {
   PLAN_PRICES_PEN,
   calculateExpiresAt,
@@ -6,6 +7,7 @@ import {
   mapDbProfileToSubscriber,
   normalizePhoneE164,
   parseJsonBody,
+  sha256,
   triggerN8nWhatsApp,
 } from '../_lib/supabaseAdmin.js';
 
@@ -157,9 +159,29 @@ export default async function handler(req: any, res: any) {
         if (payRow) createdPayments = [payRow];
       }
 
+      let whatsappSent: boolean | undefined = undefined;
+      let whatsappError: string | undefined = undefined;
+      if (status === 'activo' && body.sendWhatsApp !== false) {
+        const waResult = await triggerN8nWhatsApp(supabase, {
+          profileId: insertedProfile.id,
+          phoneE164: insertedProfile.phone_e164,
+          eventType: 'aprobacion_bienvenida',
+          name: insertedProfile.name,
+          plan: insertedProfile.plan,
+          amountPen,
+          messagePreview: `¡Hola ${insertedProfile.name}! Tu pago de S/ ${amountPen.toFixed(
+            2
+          )} fue confirmado. Tu acceso a HOY ya está ACTIVO. Entra y presiona "Comenzar" con tu WhatsApp.`,
+        });
+        whatsappSent = waResult.sent;
+        whatsappError = waResult.error;
+      }
+
       return res.status(200).json({
         ok: true,
         mode: 'supabase',
+        whatsappSent,
+        whatsappError,
         subscriber: mapDbProfileToSubscriber(insertedProfile, createdPayments),
       });
     }
@@ -235,7 +257,7 @@ export default async function handler(req: any, res: any) {
           if (newPay) paymentsList = [newPay];
         }
 
-        await triggerN8nWhatsApp(supabase, {
+        const waResult = await triggerN8nWhatsApp(supabase, {
           profileId: updated.id,
           phoneE164: updated.phone_e164,
           eventType: 'aprobacion_bienvenida',
@@ -250,6 +272,8 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({
           ok: true,
           mode: 'supabase',
+          whatsappSent: waResult.sent,
+          whatsappError: waResult.error,
           subscriber: mapDbProfileToSubscriber(updated, paymentsList),
         });
       }
@@ -308,14 +332,136 @@ export default async function handler(req: any, res: any) {
           .order('paid_at', { ascending: false })
           .order('created_at', { ascending: false });
 
+        let whatsappSent: boolean | undefined = undefined;
+        let whatsappError: string | undefined = undefined;
+        if (body.sendWhatsApp !== false) {
+          const waResult = await triggerN8nWhatsApp(supabase, {
+            profileId: updated.id,
+            phoneE164: updated.phone_e164,
+            eventType: 'aprobacion_bienvenida',
+            name: updated.name,
+            plan: updated.plan,
+            amountPen: amountPen || Number(updated.amount_pen) || 75,
+            messagePreview: `¡Hola ${updated.name}! Tu pago de S/ ${(
+              amountPen || Number(updated.amount_pen) || 75
+            ).toFixed(
+              2
+            )} fue confirmado. Tu acceso a HOY ya está ACTIVO. Entra y presiona "Comenzar" con tu WhatsApp.`,
+          });
+          whatsappSent = waResult.sent;
+          whatsappError = waResult.error;
+        }
+
         return res.status(200).json({
           ok: true,
           mode: 'supabase',
+          whatsappSent,
+          whatsappError,
           subscriber: mapDbProfileToSubscriber(updated, allPays || []),
         });
       }
 
+      if (action === 'send_access') {
+        const { data: current } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', dbId)
+          .single();
+
+        if (!current) {
+          return res.status(404).json({ ok: false, error: 'Cliente no encontrado.' });
+        }
+
+        const amountPen = Number(current.amount_pen) || PLAN_PRICES_PEN[current.plan] || 75;
+        const isActive = current.status === 'activo';
+        const eventType = isActive ? 'aprobacion_bienvenida' : 'instrucciones_pago';
+        const messagePreview = isActive
+          ? `¡Hola ${current.name}! Tu acceso a HOY (${current.plan}) está ACTIVO. Entra y presiona "Comenzar" con tu WhatsApp ${current.phone_e164}.`
+          : `Hola ${current.name}, para activar tu membresía HOY (${current.plan} - S/ ${amountPen.toFixed(
+              2
+            )}), realiza tu pago por Yape/Plin y envíanos tu comprobante.`;
+
+        const waResult = await triggerN8nWhatsApp(supabase, {
+          profileId: current.id,
+          phoneE164: current.phone_e164,
+          eventType,
+          name: current.name,
+          plan: current.plan,
+          amountPen,
+          messagePreview,
+        });
+
+        return res.status(200).json({
+          ok: true,
+          mode: 'supabase',
+          whatsappSent: waResult.sent,
+          whatsappError: waResult.error,
+        });
+      }
+
+      if (action === 'send_otp') {
+        const { data: current } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', dbId)
+          .single();
+
+        if (!current) {
+          return res.status(404).json({ ok: false, error: 'Cliente no encontrado.' });
+        }
+
+        if (current.status !== 'activo') {
+          return res.status(400).json({
+            ok: false,
+            error: 'Activa primero la membresía del cliente para enviarle un código OTP.',
+          });
+        }
+
+        const code = String(crypto.randomInt(100000, 999999));
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+        const { error: otpErr } = await supabase.from('otp_codes').insert({
+          profile_id: current.id,
+          phone_e164: current.phone_e164,
+          code_hash: sha256(code),
+          expires_at: expiresAt,
+        });
+
+        if (otpErr) {
+          return res.status(500).json({ ok: false, error: otpErr.message });
+        }
+
+        const waResult = await triggerN8nWhatsApp(supabase, {
+          profileId: current.id,
+          phoneE164: current.phone_e164,
+          eventType: 'otp_login',
+          name: current.name,
+          plan: current.plan,
+          amountPen: Number(current.amount_pen) || 75,
+          otpCode: code,
+          messagePreview: `Tu código de acceso para HOY es: ${code}. Válido por 10 minutos.`,
+        });
+
+        return res.status(200).json({
+          ok: true,
+          mode: 'supabase',
+          whatsappSent: waResult.sent,
+          whatsappError: waResult.error,
+          devOtp: !waResult.sent ? code : undefined,
+        });
+      }
+
       // Actualización general de campos de cliente
+      const { data: existingProfile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', dbId)
+        .single();
+
+      if (!existingProfile) {
+        return res.status(404).json({ ok: false, error: 'Cliente no encontrado.' });
+      }
+
       const patch = body.patch || {};
       const dbPatch: Record<string, any> = {};
       if (patch.name !== undefined) dbPatch.name = String(patch.name).trim();
@@ -336,6 +482,14 @@ export default async function handler(req: any, res: any) {
         dbPatch.phone_e164 = norm.e164;
       }
 
+      const becomingActive =
+        existingProfile.status !== 'activo' && dbPatch.status === 'activo';
+      if (becomingActive) {
+        const effectivePlan = dbPatch.plan || existingProfile.plan || 'Vitalicio';
+        dbPatch.approved_at = existingProfile.approved_at || nowIso;
+        dbPatch.expires_at = calculateExpiresAt(effectivePlan);
+      }
+
       const { data: updated, error: updErr } = await supabase
         .from('profiles')
         .update(dbPatch)
@@ -343,7 +497,34 @@ export default async function handler(req: any, res: any) {
         .select('*')
         .single();
 
-      if (updErr) return res.status(500).json({ ok: false, error: updErr.message });
+      if (updErr) {
+        if (updErr.code === '23505') {
+          return res.status(409).json({
+            ok: false,
+            error: 'Ese número de WhatsApp ya pertenece a otro cliente.',
+          });
+        }
+        return res.status(500).json({ ok: false, error: updErr.message });
+      }
+
+      let whatsappSent: boolean | undefined = undefined;
+      let whatsappError: string | undefined = undefined;
+      if (becomingActive) {
+        const amt = Number(updated.amount_pen) || PLAN_PRICES_PEN[updated.plan] || 75;
+        const waResult = await triggerN8nWhatsApp(supabase, {
+          profileId: updated.id,
+          phoneE164: updated.phone_e164,
+          eventType: 'aprobacion_bienvenida',
+          name: updated.name,
+          plan: updated.plan,
+          amountPen: amt,
+          messagePreview: `¡Hola ${updated.name}! Tu pago de S/ ${amt.toFixed(
+            2
+          )} fue confirmado. Tu acceso a HOY ya está ACTIVO. Entra y presiona "Comenzar" con tu WhatsApp.`,
+        });
+        whatsappSent = waResult.sent;
+        whatsappError = waResult.error;
+      }
 
       const { data: allPays } = await supabase
         .from('payments')
@@ -355,6 +536,8 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({
         ok: true,
         mode: 'supabase',
+        whatsappSent,
+        whatsappError,
         subscriber: mapDbProfileToSubscriber(updated, allPays || []),
       });
     }

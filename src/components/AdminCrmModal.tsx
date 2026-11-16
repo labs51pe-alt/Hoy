@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Search,
@@ -20,6 +20,10 @@ import {
   MessageSquare,
   Calendar,
   RefreshCw,
+  ArrowLeft,
+  Send,
+  KeyRound,
+  Save,
 } from 'lucide-react';
 
 export type SubscriberStatus = 'pendiente' | 'activo' | 'pausado' | 'vencido';
@@ -60,6 +64,13 @@ export interface SubscriberRecord {
   payments?: PaymentEntry[];
 }
 
+export interface CloudActionResult {
+  subscriber?: SubscriberRecord;
+  whatsappSent?: boolean;
+  whatsappError?: string;
+  devOtp?: string;
+}
+
 interface AdminCrmModalProps {
   subscribers: SubscriberRecord[];
   onUpdateSubscribers: (next: SubscriberRecord[]) => void;
@@ -68,17 +79,23 @@ interface AdminCrmModalProps {
   todayStr: string;
   isSyncing?: boolean;
   onRefreshCloud?: () => Promise<void>;
-  onCreateSubscriber?: (record: SubscriberRecord) => Promise<SubscriberRecord | void>;
+  onCreateSubscriber?: (
+    record: SubscriberRecord
+  ) => Promise<CloudActionResult | SubscriberRecord | void>;
   onPatchSubscriber?: (
     sub: SubscriberRecord,
     patch: Partial<SubscriberRecord>
-  ) => Promise<SubscriberRecord | void>;
-  onApproveSubscriber?: (sub: SubscriberRecord) => Promise<SubscriberRecord | void>;
+  ) => Promise<CloudActionResult | SubscriberRecord | void>;
+  onApproveSubscriber?: (
+    sub: SubscriberRecord
+  ) => Promise<CloudActionResult | SubscriberRecord | void>;
   onAddPaymentEntry?: (
     sub: SubscriberRecord,
     entry: PaymentEntry
-  ) => Promise<SubscriberRecord | void>;
-  onDeleteSubscriber?: (sub: SubscriberRecord) => Promise<void>;
+  ) => Promise<CloudActionResult | SubscriberRecord | void>;
+  onDeleteSubscriber?: (sub: SubscriberRecord) => Promise<boolean | void>;
+  onSendAccess?: (sub: SubscriberRecord) => Promise<CloudActionResult | void>;
+  onSendOtp?: (sub: SubscriberRecord) => Promise<CloudActionResult | void>;
 }
 
 const PLAN_PRICES: Record<SubscriberPlan, number> = {
@@ -149,6 +166,16 @@ function normalizeSubscriber(raw: SubscriberRecord): SubscriberRecord {
   };
 }
 
+function unwrapSubscriber(
+  res: CloudActionResult | SubscriberRecord | void
+): { subscriber?: SubscriberRecord; whatsappSent?: boolean; whatsappError?: string } {
+  if (!res || typeof res !== 'object') return {};
+  if ('subscriber' in res || 'whatsappSent' in res || 'whatsappError' in res) {
+    return res as CloudActionResult;
+  }
+  return { subscriber: res as SubscriberRecord };
+}
+
 function getClientPaidTotal(sub: SubscriberRecord): number {
   if (sub.paymentStatus === 'reembolsado') return 0;
   if (Array.isArray(sub.payments) && sub.payments.length > 0) {
@@ -174,6 +201,8 @@ export default function AdminCrmModal({
   onApproveSubscriber,
   onAddPaymentEntry,
   onDeleteSubscriber,
+  onSendAccess,
+  onSendOtp,
 }: AdminCrmModalProps) {
   const normalizedList = useMemo(
     () =>
@@ -191,6 +220,7 @@ export default function AdminCrmModal({
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
 
   // Estado del formulario "+ Nuevo Cliente"
   const [showNewForm, setShowNewForm] = useState(false);
@@ -204,17 +234,52 @@ export default function AdminCrmModal({
   const [newStatus, setNewStatus] = useState<SubscriberStatus>('activo');
   const [newRef, setNewRef] = useState('');
 
-  // Estado del formulario "+ Registrar Cobro" en el inspector de cliente
+  // Estado del formulario "+ Registrar Cobro" en el inspector
   const [showAddPayment, setShowAddPayment] = useState(false);
   const [payAmount, setPayAmount] = useState('75');
   const [payMethod, setPayMethod] = useState<PaymentMethod>('Yape');
   const [payRef, setPayRef] = useState('');
   const [payNote, setPayNote] = useState('');
 
+  // Borrador editable del cliente seleccionado
+  const [draft, setDraft] = useState<{
+    name: string;
+    phone: string;
+    city: string;
+    status: SubscriberStatus;
+    paymentStatus: PaymentStatus;
+    plan: SubscriberPlan;
+    amount: string;
+    paymentMethod: PaymentMethod;
+    paymentRef: string;
+    notes: string;
+  } | null>(null);
+
   const selectedClient = useMemo(
     () => normalizedList.find((s) => s.id === selectedId) || null,
     [normalizedList, selectedId]
   );
+
+  useEffect(() => {
+    if (!selectedClient) {
+      setDraft(null);
+      return;
+    }
+    setDraft({
+      name: selectedClient.name || '',
+      phone: selectedClient.phone || '',
+      city: selectedClient.city || '',
+      status: selectedClient.status,
+      paymentStatus: selectedClient.paymentStatus || 'pendiente',
+      plan: selectedClient.plan || 'Vitalicio',
+      amount: String(
+        selectedClient.amount ?? PLAN_PRICES[selectedClient.plan || 'Vitalicio']
+      ),
+      paymentMethod: selectedClient.paymentMethod || 'Por definir',
+      paymentRef: selectedClient.paymentRef || '',
+      notes: selectedClient.notes || '',
+    });
+  }, [selectedClient]);
 
   // KPIs globales en tiempo real
   const metrics = useMemo(() => {
@@ -282,7 +347,6 @@ export default function AdminCrmModal({
     const avgTicket =
       paidClientsCount > 0 ? totalEarnings / paidClientsCount : 0;
 
-    // Últimos 7 días de serie de ingresos
     const dailySeries: Array<{ date: string; label: string; amount: number }> = [];
     const baseDate = new Date();
     for (let i = 6; i >= 0; i--) {
@@ -364,24 +428,80 @@ export default function AdminCrmModal({
     });
   }, [normalizedList, searchQuery, statusFilter, planFilter, sortBy]);
 
-  const updateClient = (id: number, patch: Partial<SubscriberRecord>) => {
-    const target = normalizedList.find((s) => s.id === id);
+  const openClientEditor = (sub: SubscriberRecord, openPayForm = false) => {
+    setSelectedId(sub.id);
+    setShowAddPayment(openPayForm);
+    setConfirmDeleteId(null);
+    setPayAmount(String(sub.amount || PLAN_PRICES[sub.plan || 'Vitalicio']));
+    setPayMethod(
+      sub.paymentMethod && sub.paymentMethod !== 'Por definir'
+        ? sub.paymentMethod
+        : 'Yape'
+    );
+  };
+
+  const handleSaveDraft = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedClient || !draft) return;
+    const cleanName = draft.name.trim();
+    const cleanPhone = draft.phone.trim();
+    if (!cleanName || !cleanPhone) {
+      onNotify('Nombre y WhatsApp son obligatorios.');
+      return;
+    }
+
+    const patch: Partial<SubscriberRecord> = {
+      name: cleanName,
+      phone: cleanPhone,
+      city: draft.city.trim() || 'No especificada',
+      status: draft.status,
+      paymentStatus: draft.paymentStatus,
+      plan: draft.plan,
+      amount: Math.max(0, Number(draft.amount) || 0),
+      paymentMethod: draft.paymentMethod,
+      paymentRef: draft.paymentRef.trim(),
+      notes: draft.notes.trim(),
+    };
+
     const next = normalizedList.map((s) =>
-      s.id === id ? normalizeSubscriber({ ...s, ...patch }) : s
+      s.id === selectedClient.id ? normalizeSubscriber({ ...s, ...patch }) : s
     );
     onUpdateSubscribers(next);
-    if (target && onPatchSubscriber) {
-      void onPatchSubscriber(target, patch).then((synced) => {
-        if (synced) {
-          onUpdateSubscribers(
-            next.map((s) => (s.id === id ? normalizeSubscriber(synced) : s))
+
+    if (!onPatchSubscriber) {
+      onNotify(`Datos de ${cleanName} actualizados.`);
+      return;
+    }
+
+    setBusyAction('save');
+    try {
+      const raw = await onPatchSubscriber(selectedClient, patch);
+      const { subscriber: synced, whatsappSent, whatsappError } =
+        unwrapSubscriber(raw);
+      if (synced) {
+        onUpdateSubscribers(
+          next.map((s) =>
+            s.id === selectedClient.id ? normalizeSubscriber(synced) : s
+          )
+        );
+      }
+      if (selectedClient.status !== 'activo' && patch.status === 'activo') {
+        if (whatsappSent) {
+          onNotify(`Cliente activado y acceso enviado por WhatsApp a ${cleanName}.`);
+        } else {
+          onNotify(
+            `Cliente guardado como Activo, pero n8n no respondió (${whatsappError || 'sin webhook'}).`
           );
         }
-      });
+      } else {
+        onNotify(`Cambios guardados en Supabase para ${cleanName}.`);
+      }
+    } finally {
+      setBusyAction(null);
     }
   };
 
-  const approvePayment = (sub: SubscriberRecord) => {
+  const approvePayment = async (sub: SubscriberRecord) => {
     const amount = Number(sub.amount) || PLAN_PRICES[sub.plan || 'Vitalicio'];
     const method: PaymentMethod =
       sub.paymentMethod && sub.paymentMethod !== 'Por definir'
@@ -414,20 +534,35 @@ export default function AdminCrmModal({
       s.id === sub.id ? normalizeSubscriber({ ...s, ...optimisticPatch }) : s
     );
     onUpdateSubscribers(next);
-    onNotify(`Pago aprobado (${formatMoney(amount)}) y acceso activado para ${sub.name}.`);
 
-    if (onApproveSubscriber) {
-      void onApproveSubscriber(sub).then((synced) => {
-        if (synced) {
-          onUpdateSubscribers(
-            next.map((s) => (s.id === sub.id ? normalizeSubscriber(synced) : s))
-          );
-        }
-      });
+    if (!onApproveSubscriber) {
+      onNotify(`Pago aprobado (${formatMoney(amount)}) para ${sub.name}.`);
+      return;
+    }
+
+    setBusyAction(`approve-${sub.id}`);
+    try {
+      const raw = await onApproveSubscriber(sub);
+      const { subscriber: synced, whatsappSent, whatsappError } =
+        unwrapSubscriber(raw);
+      if (synced) {
+        onUpdateSubscribers(
+          next.map((s) => (s.id === sub.id ? normalizeSubscriber(synced) : s))
+        );
+      }
+      if (whatsappSent) {
+        onNotify(`¡Aprobado (${formatMoney(amount)}) y acceso enviado por WhatsApp!`);
+      } else if (synced) {
+        onNotify(
+          `Pago aprobado en Supabase, pero n8n no envió WhatsApp (${whatsappError || 'verifica N8N_WEBHOOK_URL'}).`
+        );
+      }
+    } finally {
+      setBusyAction(null);
     }
   };
 
-  const handleAddNewClient = (e: React.FormEvent) => {
+  const handleAddNewClient = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = newName.trim();
     const cleanPhone = newPhone.trim();
@@ -474,22 +609,39 @@ export default function AdminCrmModal({
     setNewCity('');
     setNewRef('');
     setSelectedId(newRecord.id);
-    onNotify(`Cliente ${cleanName} registrado en el CRM.`);
 
-    if (onCreateSubscriber) {
-      void onCreateSubscriber(newRecord).then((synced) => {
-        if (synced) {
-          const normalizedSynced = normalizeSubscriber(synced);
-          onUpdateSubscribers(
-            nextList.map((s) => (s.id === newRecord.id ? normalizedSynced : s))
+    if (!onCreateSubscriber) {
+      onNotify(`Cliente ${cleanName} registrado en el CRM.`);
+      return;
+    }
+
+    setBusyAction('create');
+    try {
+      const raw = await onCreateSubscriber(newRecord);
+      const { subscriber: synced, whatsappSent, whatsappError } =
+        unwrapSubscriber(raw);
+      if (synced) {
+        const normalizedSynced = normalizeSubscriber(synced);
+        onUpdateSubscribers(
+          nextList.map((s) => (s.id === newRecord.id ? normalizedSynced : s))
+        );
+        setSelectedId(normalizedSynced.id);
+        if (isPaid) {
+          onNotify(
+            whatsappSent
+              ? `Cliente ${cleanName} guardado y acceso enviado por WhatsApp.`
+              : `Cliente guardado, pero n8n no envió WhatsApp (${whatsappError || 'verifica N8N_WEBHOOK_URL'}).`
           );
-          setSelectedId(normalizedSynced.id);
+        } else {
+          onNotify(`Cliente ${cleanName} registrado en Supabase.`);
         }
-      });
+      }
+    } finally {
+      setBusyAction(null);
     }
   };
 
-  const handleAddPaymentEntry = (e: React.FormEvent) => {
+  const handleAddPaymentEntry = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedClient) return;
     const amt = Math.max(0, Number(payAmount) || 0);
@@ -513,40 +665,91 @@ export default function AdminCrmModal({
       paymentStatus: 'pagado',
       paymentMethod: payMethod,
       paymentRef: payRef.trim() || selectedClient.paymentRef,
-      approvedAt: todayStr,
+      approvedAt: selectedClient.approvedAt || todayStr,
       payments: nextPayments,
     };
     const next = normalizedList.map((s) =>
       s.id === selectedClient.id ? normalizeSubscriber({ ...s, ...patch }) : s
     );
     onUpdateSubscribers(next);
-
     setShowAddPayment(false);
     setPayRef('');
     setPayNote('');
-    onNotify(`Cobro de ${formatMoney(amt)} registrado para ${selectedClient.name}.`);
 
-    if (onAddPaymentEntry) {
-      void onAddPaymentEntry(selectedClient, entry).then((synced) => {
-        if (synced) {
-          onUpdateSubscribers(
-            next.map((s) =>
-              s.id === selectedClient.id ? normalizeSubscriber(synced) : s
-            )
-          );
-        }
-      });
+    if (!onAddPaymentEntry) {
+      onNotify(`Cobro de ${formatMoney(amt)} registrado para ${selectedClient.name}.`);
+      return;
+    }
+
+    setBusyAction('add_payment');
+    try {
+      const raw = await onAddPaymentEntry(selectedClient, entry);
+      const { subscriber: synced, whatsappSent, whatsappError } =
+        unwrapSubscriber(raw);
+      if (synced) {
+        onUpdateSubscribers(
+          next.map((s) =>
+            s.id === selectedClient.id ? normalizeSubscriber(synced) : s
+          )
+        );
+        onNotify(
+          whatsappSent
+            ? `Pago (${formatMoney(amt)}) registrado y acceso enviado por WhatsApp.`
+            : `Pago guardado y acceso activado, pero n8n no respondió (${whatsappError || 'verifica N8N_WEBHOOK_URL'}).`
+        );
+      }
+    } finally {
+      setBusyAction(null);
     }
   };
 
-  const handleDeleteClient = (id: number) => {
-    const target = normalizedList.find((s) => s.id === id);
-    onUpdateSubscribers(normalizedList.filter((s) => s.id !== id));
-    if (selectedId === id) setSelectedId(null);
-    setConfirmDeleteId(null);
-    onNotify(`Cliente ${target?.name || ''} eliminado del CRM.`);
-    if (target && onDeleteSubscriber) {
-      void onDeleteSubscriber(target);
+  const handleDeleteClient = async (sub: SubscriberRecord) => {
+    setBusyAction(`delete-${sub.id}`);
+    try {
+      if (onDeleteSubscriber) {
+        const ok = await onDeleteSubscriber(sub);
+        if (ok === false) return;
+      }
+      onUpdateSubscribers(normalizedList.filter((s) => s.id !== sub.id));
+      if (selectedId === sub.id) setSelectedId(null);
+      setConfirmDeleteId(null);
+      onNotify(`Cliente ${sub.name} eliminado.`);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleTriggerSendAccess = async (sub: SubscriberRecord) => {
+    if (!onSendAccess) return;
+    setBusyAction('send_access');
+    try {
+      const res = await onSendAccess(sub);
+      if (res?.whatsappSent) {
+        onNotify(`Mensaje de acceso enviado por WhatsApp a ${sub.name}.`);
+      } else {
+        onNotify(
+          `No se pudo enviar por n8n (${res?.whatsappError || 'verifica N8N_WEBHOOK_URL y que el flujo esté Active'}).`
+        );
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleTriggerSendOtp = async (sub: SubscriberRecord) => {
+    if (!onSendOtp) return;
+    setBusyAction('send_otp');
+    try {
+      const res = await onSendOtp(sub);
+      if (res?.whatsappSent) {
+        onNotify(`Código OTP generado y enviado por WhatsApp a ${sub.name}.`);
+      } else if (res?.devOtp) {
+        onNotify(
+          `OTP generado: ${res.devOtp} (n8n no respondió: ${res.whatsappError || 'revisa webhook'}).`
+        );
+      }
+    } finally {
+      setBusyAction(null);
     }
   };
 
@@ -603,7 +806,7 @@ export default function AdminCrmModal({
   const renderStatusLabel = (status: SubscriberStatus) => {
     if (status === 'activo') {
       return (
-        <span className="inline-flex items-center gap-1.5 text-xs font-bold text-[#16A34A]">
+        <span className="inline-flex items-center gap-1 text-xs font-bold text-[#16A34A]">
           <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
           <span>Activo</span>
         </span>
@@ -611,7 +814,7 @@ export default function AdminCrmModal({
     }
     if (status === 'pendiente') {
       return (
-        <span className="inline-flex items-center gap-1.5 text-xs font-bold text-[#D97706]">
+        <span className="inline-flex items-center gap-1 text-xs font-bold text-[#D97706]">
           <Clock className="w-3.5 h-3.5 shrink-0" />
           <span>Pendiente</span>
         </span>
@@ -619,14 +822,14 @@ export default function AdminCrmModal({
     }
     if (status === 'pausado') {
       return (
-        <span className="inline-flex items-center gap-1.5 text-xs font-bold text-[var(--mute)]">
+        <span className="inline-flex items-center gap-1 text-xs font-bold text-[var(--mute)]">
           <PauseCircle className="w-3.5 h-3.5 shrink-0" />
           <span>Pausado</span>
         </span>
       );
     }
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs font-bold text-[#DC2626]">
+      <span className="inline-flex items-center gap-1 text-xs font-bold text-[#DC2626]">
         <AlertCircle className="w-3.5 h-3.5 shrink-0" />
         <span>Vencido</span>
       </span>
@@ -639,66 +842,39 @@ export default function AdminCrmModal({
   );
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 backdrop-blur-sm p-2 sm:p-5">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 backdrop-blur-sm p-0 sm:p-5">
       <motion.div
         initial={{ opacity: 0, scale: 0.98 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-        className="w-full max-w-6xl h-[92dvh] rounded-3xl bg-[var(--card)] text-[var(--ink)] border border-[var(--line)] shadow-2xl flex flex-col overflow-hidden"
+        className="w-full max-w-6xl h-[100dvh] sm:h-[92dvh] rounded-none sm:rounded-3xl bg-[var(--card)] text-[var(--ink)] border-0 sm:border border-[var(--line)] shadow-2xl flex flex-col overflow-hidden relative"
       >
-        {/* Top Console Bar (3 zones: Breadcrumb / Segmented Tabs / Primary Actions) */}
-        <header className="px-4 sm:px-6 py-4 border-b border-[var(--line)] flex flex-wrap items-center justify-between gap-3 bg-[var(--card)] shrink-0">
-          <div className="flex items-center gap-3 min-w-0">
+        {/* Top Console Bar */}
+        <header className="px-3.5 sm:px-6 py-3 sm:py-4 border-b border-[var(--line)] flex flex-wrap items-center justify-between gap-2.5 bg-[var(--card)] shrink-0">
+          <div className="flex items-center gap-2.5 min-w-0">
             <div className="min-w-0">
-              <div className="flex items-center gap-2 text-xs font-semibold text-[var(--mute)]">
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[var(--mute)]">
                 <span>HOY</span>
                 <span aria-hidden="true">/</span>
-                <span className="text-[var(--ink)] font-bold">
-                  CRM Administrativo
-                </span>
+                <span className="text-[var(--ink)] font-bold">CRM</span>
               </div>
-              <h2 className="text-lg sm:text-xl font-extrabold tracking-tight truncate">
-                Clientes, Pagos y Ganancias
+              <h2 className="text-base sm:text-xl font-extrabold tracking-tight truncate">
+                Clientes y Pagos
               </h2>
             </div>
           </div>
 
-          <div className="flex items-center gap-1 p-1 bg-[var(--bg)] border border-[var(--line)] rounded-xl">
-            <button
-              onClick={() => setActiveTab('clients')}
-              className={`px-3.5 py-2 text-xs font-bold rounded-lg transition cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
-                activeTab === 'clients'
-                  ? 'bg-[var(--card)] text-[var(--ink)] shadow-sm'
-                  : 'text-[var(--mute)] hover:text-[var(--ink)]'
-              }`}
-            >
-              <Users className="w-3.5 h-3.5" />
-              <span>Clientes y Pagos</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('analytics')}
-              className={`px-3.5 py-2 text-xs font-bold rounded-lg transition cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
-                activeTab === 'analytics'
-                  ? 'bg-[var(--card)] text-[var(--ink)] shadow-sm'
-                  : 'text-[var(--mute)] hover:text-[var(--ink)]'
-              }`}
-            >
-              <TrendingUp className="w-3.5 h-3.5" />
-              <span>Ganancias y Reportes</span>
-            </button>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0 order-2 sm:order-3">
             {onRefreshCloud && (
               <button
                 onClick={() => void onRefreshCloud()}
                 disabled={isSyncing}
                 aria-label="Sincronizar clientes con Supabase"
-                className="min-h-[40px] min-w-[40px] px-2.5 border border-[var(--line)] bg-[var(--bg)] text-[var(--ink)] font-bold text-xs rounded-xl hover:border-[var(--acc)] transition cursor-pointer flex items-center justify-center gap-1.5"
+                className="min-h-[38px] min-w-[38px] px-2.5 border border-[var(--line)] bg-[var(--bg)] text-[var(--ink)] font-bold text-xs rounded-xl hover:border-[var(--acc)] transition cursor-pointer flex items-center justify-center"
                 title="Sincronizar con Supabase"
               >
                 <RefreshCw
-                  className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`}
+                  className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`}
                 />
               </button>
             )}
@@ -707,87 +883,111 @@ export default function AdminCrmModal({
                 setShowNewForm((v) => !v);
                 setActiveTab('clients');
               }}
-              className="min-h-[40px] px-3.5 bg-[var(--acc)] text-[var(--accink)] font-bold text-xs rounded-xl hover:opacity-95 transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+              className="min-h-[38px] px-3 sm:px-3.5 bg-[var(--acc)] text-[var(--accink)] font-bold text-xs rounded-xl hover:opacity-95 transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
             >
               <Plus className="w-4 h-4" />
-              <span>Nuevo cliente</span>
+              <span className="hidden xs:inline">Nuevo</span>
+              <span className="hidden sm:inline">cliente</span>
             </button>
             <button
               onClick={exportCsv}
-              className="min-h-[40px] px-3 border border-[var(--line)] bg-[var(--bg)] text-[var(--ink)] font-bold text-xs rounded-xl hover:border-[var(--acc)] transition cursor-pointer hidden sm:flex items-center gap-1.5 whitespace-nowrap"
+              className="min-h-[38px] min-w-[38px] px-2.5 sm:px-3 border border-[var(--line)] bg-[var(--bg)] text-[var(--ink)] font-bold text-xs rounded-xl hover:border-[var(--acc)] transition cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap"
               title="Descargar CSV"
+              aria-label="Exportar CSV"
             >
-              <Download className="w-3.5 h-3.5" />
-              <span>Exportar CSV</span>
+              <Download className="w-4 h-4" />
+              <span className="hidden md:inline">Exportar CSV</span>
             </button>
             <button
               onClick={onClose}
               aria-label="Cerrar CRM"
-              className="min-h-[40px] min-w-[40px] rounded-xl border border-[var(--line)] text-[var(--mute)] hover:text-[var(--ink)] hover:border-[var(--acc)] flex items-center justify-center cursor-pointer transition"
+              className="min-h-[38px] min-w-[38px] rounded-xl border border-[var(--line)] text-[var(--mute)] hover:text-[var(--ink)] hover:border-[var(--acc)] flex items-center justify-center cursor-pointer transition"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
+
+          <div className="w-full sm:w-auto flex items-center gap-1 p-1 bg-[var(--bg)] border border-[var(--line)] rounded-xl order-3 sm:order-2">
+            <button
+              onClick={() => setActiveTab('clients')}
+              className={`flex-1 sm:flex-initial px-3 py-1.5 sm:py-2 text-xs font-bold rounded-lg transition cursor-pointer whitespace-nowrap flex items-center justify-center gap-1.5 ${
+                activeTab === 'clients'
+                  ? 'bg-[var(--card)] text-[var(--ink)] shadow-sm'
+                  : 'text-[var(--mute)] hover:text-[var(--ink)]'
+              }`}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>Clientes ({metrics.totalClients})</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('analytics')}
+              className={`flex-1 sm:flex-initial px-3 py-1.5 sm:py-2 text-xs font-bold rounded-lg transition cursor-pointer whitespace-nowrap flex items-center justify-center gap-1.5 ${
+                activeTab === 'analytics'
+                  ? 'bg-[var(--card)] text-[var(--ink)] shadow-sm'
+                  : 'text-[var(--mute)] hover:text-[var(--ink)]'
+              }`}
+            >
+              <TrendingUp className="w-3.5 h-3.5" />
+              <span>Ganancias</span>
+            </button>
+          </div>
         </header>
 
-        {/* 4-Column KPI Strip (single elevation, hairline dividers, tabular figures) */}
+        {/* KPI Strip */}
         <section className="grid grid-cols-2 lg:grid-cols-4 border-b border-[var(--line)] bg-[var(--bg)]/50 shrink-0">
-          <div className="px-4 sm:px-6 py-3.5 border-b lg:border-b-0 border-r border-[var(--line)]">
-            <div className="flex items-center justify-between text-xs font-semibold text-[var(--mute)]">
-              <span>Ganancias cobradas</span>
-              <span className="text-xs font-extrabold text-[#16A34A]">S/</span>
+          <div className="px-3.5 sm:px-6 py-2.5 sm:py-3.5 border-b lg:border-b-0 border-r border-[var(--line)]">
+            <div className="flex items-center justify-between text-[11px] sm:text-xs font-semibold text-[var(--mute)]">
+              <span>Cobradas</span>
+              <span className="text-[11px] font-extrabold text-[#16A34A]">S/</span>
             </div>
-            <p className="text-xl sm:text-2xl font-extrabold tracking-tight tabular-nums mt-1 text-[var(--ink)]">
+            <p className="text-base sm:text-2xl font-extrabold tracking-tight tabular-nums mt-0.5 sm:mt-1 text-[var(--ink)]">
               {formatMoney(metrics.totalEarnings)}
             </p>
-            <p className="text-[11px] text-[var(--mute)] tabular-nums mt-0.5">
-              {metrics.paidClientsCount} pagos · Ticket prom.{' '}
-              {formatMoney(metrics.avgTicket)}
+            <p className="text-[10px] sm:text-[11px] text-[var(--mute)] tabular-nums truncate">
+              {metrics.paidClientsCount} pagos · Prom. {formatMoney(metrics.avgTicket)}
             </p>
           </div>
 
-          <div className="px-4 sm:px-6 py-3.5 border-b lg:border-b-0 lg:border-r border-[var(--line)]">
-            <div className="flex items-center justify-between text-xs font-semibold text-[var(--mute)]">
-              <span>Por aprobar / cobrar</span>
+          <div className="px-3.5 sm:px-6 py-2.5 sm:py-3.5 border-b lg:border-b-0 lg:border-r border-[var(--line)]">
+            <div className="flex items-center justify-between text-[11px] sm:text-xs font-semibold text-[var(--mute)]">
+              <span>Por aprobar</span>
               <Clock className="w-3.5 h-3.5 text-[#D97706]" />
             </div>
-            <p className="text-xl sm:text-2xl font-extrabold tracking-tight tabular-nums mt-1 text-[#D97706]">
+            <p className="text-base sm:text-2xl font-extrabold tracking-tight tabular-nums mt-0.5 sm:mt-1 text-[#D97706]">
               {formatMoney(metrics.pendingAmount)}
             </p>
-            <p className="text-[11px] text-[var(--mute)] tabular-nums mt-0.5">
+            <p className="text-[10px] sm:text-[11px] text-[var(--mute)] tabular-nums truncate">
               {metrics.pendingCount}{' '}
-              {metrics.pendingCount === 1
-                ? 'solicitud pendiente'
-                : 'solicitudes pendientes'}
+              {metrics.pendingCount === 1 ? 'pendiente' : 'pendientes'}
             </p>
           </div>
 
-          <div className="px-4 sm:px-6 py-3.5 border-r border-[var(--line)]">
-            <div className="flex items-center justify-between text-xs font-semibold text-[var(--mute)]">
-              <span>Socios activos</span>
+          <div className="px-3.5 sm:px-6 py-2.5 sm:py-3.5 border-r border-[var(--line)]">
+            <div className="flex items-center justify-between text-[11px] sm:text-xs font-semibold text-[var(--mute)]">
+              <span>Activos</span>
               <Users className="w-3.5 h-3.5 text-[var(--acc)]" />
             </div>
-            <p className="text-xl sm:text-2xl font-extrabold tracking-tight tabular-nums mt-1 text-[var(--ink)]">
+            <p className="text-base sm:text-2xl font-extrabold tracking-tight tabular-nums mt-0.5 sm:mt-1 text-[var(--ink)]">
               {metrics.activeCount}{' '}
-              <span className="text-sm font-semibold text-[var(--mute)]">
+              <span className="text-xs sm:text-sm font-semibold text-[var(--mute)]">
                 / {metrics.totalClients}
               </span>
             </p>
-            <p className="text-[11px] text-[var(--mute)] tabular-nums mt-0.5">
-              Conversión del {metrics.conversionRate}%
+            <p className="text-[10px] sm:text-[11px] text-[var(--mute)] tabular-nums">
+              Conv. {metrics.conversionRate}%
             </p>
           </div>
 
-          <div className="px-4 sm:px-6 py-3.5">
-            <div className="flex items-center justify-between text-xs font-semibold text-[var(--mute)]">
-              <span>Ingresos este mes</span>
+          <div className="px-3.5 sm:px-6 py-2.5 sm:py-3.5">
+            <div className="flex items-center justify-between text-[11px] sm:text-xs font-semibold text-[var(--mute)]">
+              <span>Este mes</span>
               <Calendar className="w-3.5 h-3.5 text-[var(--acc)]" />
             </div>
-            <p className="text-xl sm:text-2xl font-extrabold tracking-tight tabular-nums mt-1 text-[var(--ink)]">
+            <p className="text-base sm:text-2xl font-extrabold tracking-tight tabular-nums mt-0.5 sm:mt-1 text-[var(--ink)]">
               {formatMoney(metrics.monthEarnings)}
             </p>
-            <p className="text-[11px] text-[var(--mute)] tabular-nums mt-0.5">
-              Mes actual · {todayStr.slice(0, 7)}
+            <p className="text-[10px] sm:text-[11px] text-[var(--mute)] tabular-nums">
+              {todayStr.slice(0, 7)}
             </p>
           </div>
         </section>
@@ -796,16 +996,16 @@ export default function AdminCrmModal({
         <div className="flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden">
           {activeTab === 'clients' ? (
             <>
-              {/* Left / Primary Data Grid Area */}
-              <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+              {/* Left / Primary Data Area */}
+              <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
                 {/* Inline "+ Nuevo Cliente" Form */}
                 {showNewForm && (
                   <form
                     onSubmit={handleAddNewClient}
-                    className="p-4 sm:p-5 border-b border-[var(--line)] bg-[var(--bg)] space-y-3 shrink-0"
+                    className="p-3.5 sm:p-5 border-b border-[var(--line)] bg-[var(--bg)] space-y-2.5 shrink-0 max-h-[55dvh] overflow-y-auto"
                   >
                     <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-extrabold">
+                      <h3 className="text-xs sm:text-sm font-extrabold">
                         Registrar nuevo cliente o pago manual
                       </h3>
                       <button
@@ -816,7 +1016,7 @@ export default function AdminCrmModal({
                         Ocultar
                       </button>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                       <input
                         type="text"
                         value={newName}
@@ -901,14 +1101,15 @@ export default function AdminCrmModal({
                           }
                           className="flex-1 min-h-[42px] px-3 text-xs font-bold bg-[var(--card)] border border-[var(--line)] rounded-xl"
                         >
-                          <option value="activo">Estado: Activo (Pagado)</option>
+                          <option value="activo">Estado: Activo (Envía WhatsApp)</option>
                           <option value="pendiente">Estado: Pendiente</option>
                         </select>
                         <button
                           type="submit"
-                          className="min-h-[42px] px-4 bg-[var(--acc)] text-[var(--accink)] font-bold text-xs rounded-xl cursor-pointer hover:opacity-95 whitespace-nowrap"
+                          disabled={busyAction === 'create'}
+                          className="min-h-[42px] px-4 bg-[var(--acc)] text-[var(--accink)] font-bold text-xs rounded-xl cursor-pointer hover:opacity-95 whitespace-nowrap disabled:opacity-60"
                         >
-                          Guardar
+                          {busyAction === 'create' ? 'Guardando...' : 'Guardar'}
                         </button>
                       </div>
                     </div>
@@ -916,20 +1117,20 @@ export default function AdminCrmModal({
                 )}
 
                 {/* Search & Filters Toolbar */}
-                <div className="px-4 sm:px-6 py-3 border-b border-[var(--line)] flex flex-wrap items-center justify-between gap-2.5 shrink-0">
-                  <div className="relative flex-1 min-w-[200px] max-w-sm">
+                <div className="px-3.5 sm:px-6 py-2.5 sm:py-3 border-b border-[var(--line)] flex flex-col sm:flex-row sm:flex-wrap sm:items-center sm:justify-between gap-2 shrink-0">
+                  <div className="relative w-full sm:flex-1 sm:min-w-[200px] sm:max-w-sm">
                     <Search className="w-4 h-4 text-[var(--mute)] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Buscar por nombre, WhatsApp, ciudad o ref..."
-                      className="w-full min-h-[40px] pl-9 pr-3 text-xs font-semibold bg-[var(--bg)] border border-[var(--line)] focus:border-[var(--acc)] rounded-xl outline-none"
+                      placeholder="Buscar nombre, WhatsApp, ciudad o ref..."
+                      className="w-full min-h-[38px] pl-9 pr-3 text-xs font-semibold bg-[var(--bg)] border border-[var(--line)] focus:border-[var(--acc)] rounded-xl outline-none"
                     />
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    <div className="flex items-center gap-1 p-1 bg-[var(--bg)] border border-[var(--line)] rounded-xl overflow-x-auto no-scrollbar">
+                    <div className="w-full sm:w-auto flex items-center gap-1 p-1 bg-[var(--bg)] border border-[var(--line)] rounded-xl overflow-x-auto no-scrollbar">
                       {(
                         [
                           ['todos', 'Todos'],
@@ -953,98 +1154,96 @@ export default function AdminCrmModal({
                       ))}
                     </div>
 
-                    <select
-                      value={planFilter}
-                      onChange={(e) =>
-                        setPlanFilter(e.target.value as 'todos' | SubscriberPlan)
-                      }
-                      className="min-h-[38px] px-2.5 text-[11px] font-bold bg-[var(--bg)] border border-[var(--line)] rounded-xl cursor-pointer"
-                    >
-                      <option value="todos">Todos los planes</option>
-                      {PLANS.map((p) => (
-                        <option key={p} value={p}>
-                          Plan {p}
-                        </option>
-                      ))}
-                    </select>
-
-                    <div className="flex items-center gap-1 min-h-[38px] px-2.5 bg-[var(--bg)] border border-[var(--line)] rounded-xl">
-                      <ArrowUpDown className="w-3.5 h-3.5 text-[var(--mute)]" />
+                    <div className="flex items-center gap-2 w-full sm:w-auto">
                       <select
-                        value={sortBy}
+                        value={planFilter}
                         onChange={(e) =>
-                          setSortBy(e.target.value as 'recent' | 'amount' | 'name')
+                          setPlanFilter(e.target.value as 'todos' | SubscriberPlan)
                         }
-                        className="text-[11px] font-bold bg-transparent outline-none cursor-pointer"
+                        className="flex-1 sm:flex-initial min-h-[36px] px-2.5 text-[11px] font-bold bg-[var(--bg)] border border-[var(--line)] rounded-xl cursor-pointer"
                       >
-                        <option value="recent">Más recientes</option>
-                        <option value="amount">Mayor monto</option>
-                        <option value="name">Nombre A-Z</option>
+                        <option value="todos">Todos los planes</option>
+                        {PLANS.map((p) => (
+                          <option key={p} value={p}>
+                            Plan {p}
+                          </option>
+                        ))}
                       </select>
+
+                      <div className="flex-1 sm:flex-initial flex items-center gap-1 min-h-[36px] px-2.5 bg-[var(--bg)] border border-[var(--line)] rounded-xl">
+                        <ArrowUpDown className="w-3.5 h-3.5 text-[var(--mute)] shrink-0" />
+                        <select
+                          value={sortBy}
+                          onChange={(e) =>
+                            setSortBy(e.target.value as 'recent' | 'amount' | 'name')
+                          }
+                          className="w-full text-[11px] font-bold bg-transparent outline-none cursor-pointer"
+                        >
+                          <option value="recent">Más recientes</option>
+                          <option value="amount">Mayor monto</option>
+                          <option value="name">Nombre A-Z</option>
+                        </select>
+                      </div>
                     </div>
                   </div>
                 </div>
 
-                {/* High-Density Interactive Table */}
-                <div className="flex-1 overflow-auto">
+                {/* Responsive Client List: Mobile Cards (< md) + Desktop Table (md+) */}
+                <div className="flex-1 min-h-0 overflow-y-auto">
                   {filteredList.length > 0 ? (
-                    <table className="w-full text-left text-xs border-collapse">
-                      <thead className="sticky top-0 bg-[var(--card)] border-b border-[var(--line)] text-[var(--mute)] z-10">
-                        <tr>
-                          <th className="py-3 px-4 sm:pl-6 font-bold">Cliente</th>
-                          <th className="py-3 px-3 font-bold">WhatsApp</th>
-                          <th className="py-3 px-3 font-bold hidden md:table-cell">
-                            Plan / Método
-                          </th>
-                          <th className="py-3 px-3 font-bold text-right">Monto</th>
-                          <th className="py-3 px-3 font-bold">Estado</th>
-                          <th className="py-3 px-4 sm:pr-6 font-bold text-right">
-                            Acción rápida
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-[var(--line)]">
+                    <>
+                      {/* Mobile Cards */}
+                      <div className="md:hidden divide-y divide-[var(--line)]">
                         {filteredList.map((sub) => {
                           const isSelected = selectedId === sub.id;
                           const paidTotal = getClientPaidTotal(sub);
                           const displayAmt =
                             paidTotal > 0 ? paidTotal : Number(sub.amount) || 0;
+                          const isDeleting = confirmDeleteId === sub.id;
 
                           return (
-                            <tr
+                            <div
                               key={sub.id}
-                              onClick={() => {
-                                setSelectedId(sub.id);
-                                setShowAddPayment(false);
-                                setConfirmDeleteId(null);
-                                setPayAmount(
-                                  String(sub.amount || PLAN_PRICES[sub.plan || 'Vitalicio'])
-                                );
-                                setPayMethod(
-                                  sub.paymentMethod && sub.paymentMethod !== 'Por definir'
-                                    ? sub.paymentMethod
-                                    : 'Yape'
-                                );
-                              }}
-                              className={`cursor-pointer transition-colors ${
+                              onClick={() => openClientEditor(sub, false)}
+                              className={`p-3.5 space-y-2.5 transition-colors cursor-pointer ${
                                 isSelected
                                   ? 'bg-[var(--acc)]/10'
-                                  : 'hover:bg-[var(--bg)]/70'
+                                  : 'active:bg-[var(--bg)]'
                               }`}
                             >
-                              <td className="py-3 px-4 sm:pl-6">
-                                <div className="font-bold text-[var(--ink)]">
-                                  {sub.name}
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="font-extrabold text-sm text-[var(--ink)] truncate">
+                                      {sub.name}
+                                    </span>
+                                    {renderStatusLabel(sub.status)}
+                                  </div>
+                                  <p className="text-[11px] text-[var(--mute)] mt-0.5 truncate">
+                                    {sub.plan || 'Vitalicio'} · {sub.paymentMethod || 'Por definir'} ·{' '}
+                                    {sub.city || 'Sin ciudad'}
+                                  </p>
                                 </div>
-                                <div className="text-[11px] text-[var(--mute)] flex items-center gap-1.5 mt-0.5">
-                                  <span>{sub.city || 'Sin ciudad'}</span>
-                                  <span aria-hidden="true">·</span>
-                                  <span className="tabular-nums">{sub.date}</span>
+                                <div className="text-right shrink-0">
+                                  <p
+                                    className={`font-mono text-sm font-extrabold tabular-nums ${
+                                      paidTotal > 0
+                                        ? 'text-[#16A34A]'
+                                        : sub.paymentStatus === 'reembolsado'
+                                        ? 'text-[#DC2626] line-through'
+                                        : 'text-[var(--ink)]'
+                                    }`}
+                                  >
+                                    {formatMoney(displayAmt)}
+                                  </p>
+                                  <p className="text-[10px] font-semibold text-[var(--mute)] tabular-nums">
+                                    {sub.date}
+                                  </p>
                                 </div>
-                              </td>
+                              </div>
 
-                              <td
-                                className="py-3 px-3"
+                              <div
+                                className="flex items-center justify-between gap-2"
                                 onClick={(e) => e.stopPropagation()}
                               >
                                 <button
@@ -1054,79 +1253,232 @@ export default function AdminCrmModal({
                                       `Número ${sub.phone} copiado.`
                                     )
                                   }
-                                  className="font-mono text-[11px] font-semibold text-[var(--ink)] hover:text-[var(--acc)] flex items-center gap-1.5 cursor-pointer"
-                                  title="Copiar número"
+                                  className="font-mono text-xs font-semibold text-[var(--ink)] bg-[var(--bg)] border border-[var(--line)] px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 cursor-pointer"
                                 >
                                   <span>{sub.phone}</span>
                                   <Copy className="w-3 h-3 text-[var(--mute)]" />
                                 </button>
-                              </td>
-
-                              <td className="py-3 px-3 hidden md:table-cell">
-                                <div className="font-semibold text-[var(--ink)]">
-                                  {sub.plan || 'Vitalicio'}
-                                </div>
-                                <div className="text-[11px] text-[var(--mute)]">
-                                  {sub.paymentMethod || 'Por definir'}
-                                  {sub.paymentRef ? ` · ${sub.paymentRef}` : ''}
-                                </div>
-                              </td>
-
-                              <td className="py-3 px-3 text-right font-mono font-bold tabular-nums">
-                                <span
-                                  className={
-                                    paidTotal > 0
-                                      ? 'text-[#16A34A]'
-                                      : sub.paymentStatus === 'reembolsado'
-                                      ? 'text-[#DC2626] line-through'
-                                      : 'text-[var(--ink)]'
-                                  }
-                                >
-                                  {formatMoney(displayAmt)}
-                                </span>
-                                <div className="text-[10px] font-sans font-semibold text-[var(--mute)]">
+                                <span className="text-[10px] font-bold text-[var(--mute)]">
                                   {sub.paymentStatus === 'pagado'
                                     ? 'Cobrado'
                                     : sub.paymentStatus === 'reembolsado'
                                     ? 'Reembolso'
                                     : 'Por cobrar'}
-                                </div>
-                              </td>
+                                </span>
+                              </div>
 
-                              <td className="py-3 px-3">
-                                {renderStatusLabel(sub.status)}
-                              </td>
-
-                              <td
-                                className="py-3 px-4 sm:pr-6 text-right"
+                              {/* Direct Mobile Action Buttons on every client */}
+                              <div
+                                className="flex flex-wrap items-center gap-1.5 pt-0.5"
                                 onClick={(e) => e.stopPropagation()}
                               >
-                                <div className="inline-flex items-center gap-1.5">
-                                  {sub.status === 'pendiente' && (
-                                    <button
-                                      onClick={() => approvePayment(sub)}
-                                      className="px-2.5 py-1.5 bg-[var(--acc)] text-[var(--accink)] font-bold rounded-lg hover:opacity-95 transition cursor-pointer text-[11px] whitespace-nowrap"
-                                    >
-                                      Aprobar pago
-                                    </button>
-                                  )}
+                                {sub.status !== 'activo' && (
                                   <button
-                                    onClick={() => {
-                                      setSelectedId(sub.id);
-                                      setShowAddPayment(false);
-                                    }}
-                                    className="px-2.5 py-1.5 border border-[var(--line)] bg-[var(--bg)] text-[var(--ink)] font-bold rounded-lg hover:border-[var(--acc)] transition cursor-pointer text-[11px] inline-flex items-center gap-1 whitespace-nowrap"
+                                    disabled={busyAction === `approve-${sub.id}`}
+                                    onClick={() => void approvePayment(sub)}
+                                    className="flex-1 min-h-[38px] px-2.5 bg-[#16A34A] text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1 cursor-pointer disabled:opacity-60"
                                   >
-                                    <Edit3 className="w-3 h-3" />
-                                    <span>Gestionar</span>
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>Aprobar y enviar</span>
                                   </button>
-                                </div>
-                              </td>
-                            </tr>
+                                )}
+                                <button
+                                  onClick={() => openClientEditor(sub, true)}
+                                  className="min-h-[38px] px-3 bg-[var(--acc)]/12 text-[var(--acc)] font-bold rounded-xl text-xs flex items-center justify-center gap-1 cursor-pointer"
+                                >
+                                  <CreditCard className="w-3.5 h-3.5" />
+                                  <span>Pago</span>
+                                </button>
+                                <button
+                                  onClick={() => openClientEditor(sub, false)}
+                                  className="min-h-[38px] px-3 border border-[var(--line)] bg-[var(--bg)] text-[var(--ink)] font-bold rounded-xl text-xs flex items-center justify-center gap-1 cursor-pointer"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                  <span>Editar</span>
+                                </button>
+                                {isDeleting ? (
+                                  <div className="flex items-center gap-1 ml-auto">
+                                    <button
+                                      disabled={busyAction === `delete-${sub.id}`}
+                                      onClick={() => void handleDeleteClient(sub)}
+                                      className="min-h-[38px] px-3 bg-[#DC2626] text-white font-bold rounded-xl text-xs cursor-pointer"
+                                    >
+                                      Confirmar
+                                    </button>
+                                    <button
+                                      onClick={() => setConfirmDeleteId(null)}
+                                      className="min-h-[38px] px-2.5 border border-[var(--line)] font-bold rounded-xl text-xs cursor-pointer"
+                                    >
+                                      No
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => setConfirmDeleteId(sub.id)}
+                                    aria-label={`Eliminar ${sub.name}`}
+                                    className="min-h-[38px] min-w-[38px] px-2.5 border border-red-500/30 bg-red-500/10 text-[#DC2626] font-bold rounded-xl text-xs flex items-center justify-center cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
                           );
                         })}
-                      </tbody>
-                    </table>
+                      </div>
+
+                      {/* Desktop Table */}
+                      <table className="hidden md:table w-full text-left text-xs border-collapse">
+                        <thead className="sticky top-0 bg-[var(--card)] border-b border-[var(--line)] text-[var(--mute)] z-10">
+                          <tr>
+                            <th className="py-3 px-4 sm:pl-6 font-bold">Cliente</th>
+                            <th className="py-3 px-3 font-bold">WhatsApp</th>
+                            <th className="py-3 px-3 font-bold">Plan / Método</th>
+                            <th className="py-3 px-3 font-bold text-right">Monto</th>
+                            <th className="py-3 px-3 font-bold">Estado</th>
+                            <th className="py-3 px-4 sm:pr-6 font-bold text-right">
+                              Acciones
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[var(--line)]">
+                          {filteredList.map((sub) => {
+                            const isSelected = selectedId === sub.id;
+                            const paidTotal = getClientPaidTotal(sub);
+                            const displayAmt =
+                              paidTotal > 0 ? paidTotal : Number(sub.amount) || 0;
+                            const isDeleting = confirmDeleteId === sub.id;
+
+                            return (
+                              <tr
+                                key={sub.id}
+                                onClick={() => openClientEditor(sub, false)}
+                                className={`cursor-pointer transition-colors ${
+                                  isSelected
+                                    ? 'bg-[var(--acc)]/10'
+                                    : 'hover:bg-[var(--bg)]/70'
+                                }`}
+                              >
+                                <td className="py-3 px-4 sm:pl-6">
+                                  <div className="font-bold text-[var(--ink)]">
+                                    {sub.name}
+                                  </div>
+                                  <div className="text-[11px] text-[var(--mute)] flex items-center gap-1.5 mt-0.5">
+                                    <span>{sub.city || 'Sin ciudad'}</span>
+                                    <span aria-hidden="true">·</span>
+                                    <span className="tabular-nums">{sub.date}</span>
+                                  </div>
+                                </td>
+
+                                <td
+                                  className="py-3 px-3"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <button
+                                    onClick={() =>
+                                      copyToClipboard(
+                                        sub.phone,
+                                        `Número ${sub.phone} copiado.`
+                                      )
+                                    }
+                                    className="font-mono text-[11px] font-semibold text-[var(--ink)] hover:text-[var(--acc)] flex items-center gap-1.5 cursor-pointer"
+                                    title="Copiar número"
+                                  >
+                                    <span>{sub.phone}</span>
+                                    <Copy className="w-3 h-3 text-[var(--mute)]" />
+                                  </button>
+                                </td>
+
+                                <td className="py-3 px-3">
+                                  <div className="font-semibold text-[var(--ink)]">
+                                    {sub.plan || 'Vitalicio'}
+                                  </div>
+                                  <div className="text-[11px] text-[var(--mute)]">
+                                    {sub.paymentMethod || 'Por definir'}
+                                    {sub.paymentRef ? ` · ${sub.paymentRef}` : ''}
+                                  </div>
+                                </td>
+
+                                <td className="py-3 px-3 text-right font-mono font-bold tabular-nums">
+                                  <span
+                                    className={
+                                      paidTotal > 0
+                                        ? 'text-[#16A34A]'
+                                        : sub.paymentStatus === 'reembolsado'
+                                        ? 'text-[#DC2626] line-through'
+                                        : 'text-[var(--ink)]'
+                                    }
+                                  >
+                                    {formatMoney(displayAmt)}
+                                  </span>
+                                  <div className="text-[10px] font-sans font-semibold text-[var(--mute)]">
+                                    {sub.paymentStatus === 'pagado'
+                                      ? 'Cobrado'
+                                      : sub.paymentStatus === 'reembolsado'
+                                      ? 'Reembolso'
+                                      : 'Por cobrar'}
+                                  </div>
+                                </td>
+
+                                <td className="py-3 px-3">
+                                  {renderStatusLabel(sub.status)}
+                                </td>
+
+                                <td
+                                  className="py-3 px-4 sm:pr-6 text-right"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <div className="inline-flex items-center gap-1.5">
+                                    {sub.status !== 'activo' && (
+                                      <button
+                                        disabled={busyAction === `approve-${sub.id}`}
+                                        onClick={() => void approvePayment(sub)}
+                                        className="px-2.5 py-1.5 bg-[#16A34A] text-white font-bold rounded-lg hover:opacity-95 transition cursor-pointer text-[11px] whitespace-nowrap disabled:opacity-60"
+                                      >
+                                        Aprobar pago
+                                      </button>
+                                    )}
+                                    <button
+                                      onClick={() => openClientEditor(sub, false)}
+                                      className="px-2.5 py-1.5 border border-[var(--line)] bg-[var(--bg)] text-[var(--ink)] font-bold rounded-lg hover:border-[var(--acc)] transition cursor-pointer text-[11px] inline-flex items-center gap-1 whitespace-nowrap"
+                                    >
+                                      <Edit3 className="w-3 h-3" />
+                                      <span>Editar</span>
+                                    </button>
+                                    {isDeleting ? (
+                                      <>
+                                        <button
+                                          disabled={busyAction === `delete-${sub.id}`}
+                                          onClick={() => void handleDeleteClient(sub)}
+                                          className="px-2.5 py-1.5 bg-[#DC2626] text-white font-bold rounded-lg text-[11px] cursor-pointer"
+                                        >
+                                          Sí
+                                        </button>
+                                        <button
+                                          onClick={() => setConfirmDeleteId(null)}
+                                          className="px-2 py-1.5 border border-[var(--line)] font-bold rounded-lg text-[11px] cursor-pointer"
+                                        >
+                                          No
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <button
+                                        onClick={() => setConfirmDeleteId(sub.id)}
+                                        title={`Eliminar ${sub.name}`}
+                                        aria-label={`Eliminar ${sub.name}`}
+                                        className="p-1.5 border border-red-500/30 bg-red-500/10 text-[#DC2626] rounded-lg hover:bg-red-500/20 transition cursor-pointer"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </>
                   ) : (
                     <div className="h-full min-h-[240px] flex flex-col items-center justify-center p-8 text-center space-y-3">
                       <p className="text-sm font-bold text-[var(--ink)]">
@@ -1150,65 +1502,123 @@ export default function AdminCrmModal({
                 </div>
               </div>
 
-              {/* Right Slide-Over Client & Payment Inspector */}
-              {selectedClient && (
-                <aside className="w-full lg:w-[390px] border-t lg:border-t-0 lg:border-l border-[var(--line)] bg-[var(--bg)]/60 flex flex-col max-h-[52dvh] lg:max-h-none overflow-y-auto shrink-0">
-                  <div className="p-4 sm:p-5 border-b border-[var(--line)] flex items-center justify-between gap-2 bg-[var(--card)] sticky top-0 z-10">
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-bold text-[var(--mute)]">
-                        Ficha de Cliente #{selectedClient.id}
-                      </p>
-                      <h3 className="text-base font-extrabold truncate">
-                        {selectedClient.name}
-                      </h3>
+              {/* Client Inspector: Full-screen Sheet on Mobile (< lg), Right Drawer on Desktop (lg+) */}
+              {selectedClient && draft && (
+                <aside className="fixed inset-0 z-30 lg:static lg:z-auto w-full lg:w-[410px] border-t-0 lg:border-l border-[var(--line)] bg-[var(--card)] lg:bg-[var(--bg)]/60 flex flex-col overflow-y-auto shrink-0">
+                  <div className="p-3.5 sm:p-5 border-b border-[var(--line)] flex items-center justify-between gap-2 bg-[var(--card)] sticky top-0 z-10">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <button
+                        onClick={() => setSelectedId(null)}
+                        aria-label="Volver a clientes"
+                        className="lg:hidden min-h-[38px] px-2.5 rounded-xl border border-[var(--line)] bg-[var(--bg)] text-[var(--ink)] font-bold text-xs flex items-center gap-1 cursor-pointer shrink-0"
+                      >
+                        <ArrowLeft className="w-4 h-4" />
+                        <span>Lista</span>
+                      </button>
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-bold text-[var(--mute)]">
+                          Cliente #{selectedClient.id}
+                        </p>
+                        <h3 className="text-base font-extrabold truncate">
+                          {selectedClient.name}
+                        </h3>
+                      </div>
                     </div>
                     <button
                       onClick={() => setSelectedId(null)}
                       aria-label="Cerrar ficha"
-                      className="min-h-[34px] min-w-[34px] rounded-xl border border-[var(--line)] text-[var(--mute)] hover:text-[var(--ink)] flex items-center justify-center cursor-pointer"
+                      className="hidden lg:flex min-h-[34px] min-w-[34px] rounded-xl border border-[var(--line)] text-[var(--mute)] hover:text-[var(--ink)] items-center justify-center cursor-pointer"
                     >
                       <X className="w-4 h-4" />
                     </button>
                   </div>
 
-                  <div className="p-4 sm:p-5 space-y-5 text-xs">
-                    {/* Quick Action Bar */}
-                    <div className="flex flex-wrap gap-2">
-                      {selectedClient.status !== 'activo' && (
+                  <div className="p-4 sm:p-5 space-y-5 text-xs pb-10">
+                    {/* Quick Payment & WhatsApp Actions */}
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {selectedClient.status !== 'activo' && (
+                          <button
+                            disabled={busyAction === `approve-${selectedClient.id}`}
+                            onClick={() => void approvePayment(selectedClient)}
+                            className="min-h-[42px] px-3 bg-[#16A34A] text-white font-bold rounded-xl hover:opacity-95 transition cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-60"
+                          >
+                            <Check className="w-4 h-4" />
+                            <span>Aprobar y enviar acceso</span>
+                          </button>
+                        )}
                         <button
-                          onClick={() => approvePayment(selectedClient)}
-                          className="flex-1 min-h-[40px] px-3 bg-[#16A34A] text-white font-bold rounded-xl hover:opacity-95 transition cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap"
+                          onClick={() => {
+                            setShowAddPayment((v) => !v);
+                            setPayAmount(
+                              String(
+                                selectedClient.amount ||
+                                  PLAN_PRICES[selectedClient.plan || 'Vitalicio']
+                              )
+                            );
+                          }}
+                          className="min-h-[42px] px-3 bg-[var(--acc)] text-[var(--accink)] font-bold rounded-xl hover:opacity-95 transition cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap"
                         >
-                          <Check className="w-4 h-4" />
-                          <span>Aprobar y activar</span>
+                          <CreditCard className="w-4 h-4" />
+                          <span>Registrar cobro</span>
                         </button>
+                      </div>
+
+                      {selectedClient.dbId && (onSendAccess || onSendOtp) && (
+                        <div className="grid grid-cols-2 gap-2">
+                          {onSendAccess && (
+                            <button
+                              disabled={busyAction === 'send_access'}
+                              onClick={() => void handleTriggerSendAccess(selectedClient)}
+                              className="min-h-[40px] px-3 border border-[var(--line)] bg-[var(--card)] text-[var(--ink)] font-bold rounded-xl hover:border-[var(--acc)] transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-60"
+                            >
+                              <Send className="w-3.5 h-3.5 text-[var(--acc)] shrink-0" />
+                              <span className="truncate">
+                                {busyAction === 'send_access'
+                                  ? 'Enviando...'
+                                  : selectedClient.status === 'activo'
+                                  ? 'Reenviar acceso'
+                                  : 'Enviar link pago'}
+                              </span>
+                            </button>
+                          )}
+                          {onSendOtp && (
+                            <button
+                              disabled={
+                                busyAction === 'send_otp' ||
+                                selectedClient.status !== 'activo'
+                              }
+                              onClick={() => void handleTriggerSendOtp(selectedClient)}
+                              title={
+                                selectedClient.status !== 'activo'
+                                  ? 'Activa al cliente primero para generar OTP'
+                                  : 'Genera OTP y lo envía por WhatsApp'
+                              }
+                              className="min-h-[40px] px-3 border border-[var(--line)] bg-[var(--card)] text-[var(--ink)] font-bold rounded-xl hover:border-[var(--acc)] transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
+                            >
+                              <KeyRound className="w-3.5 h-3.5 text-[#16A34A] shrink-0" />
+                              <span className="truncate">
+                                {busyAction === 'send_otp'
+                                  ? 'Generando...'
+                                  : 'Enviar OTP'}
+                              </span>
+                            </button>
+                          )}
+                        </div>
                       )}
-                      <button
-                        onClick={() => {
-                          setShowAddPayment((v) => !v);
-                          setPayAmount(
-                            String(
-                              selectedClient.amount ||
-                                PLAN_PRICES[selectedClient.plan || 'Vitalicio']
-                            )
-                          );
-                        }}
-                        className="flex-1 min-h-[40px] px-3 bg-[var(--acc)] text-[var(--accink)] font-bold rounded-xl hover:opacity-95 transition cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap"
-                      >
-                        <CreditCard className="w-4 h-4" />
-                        <span>Registrar cobro</span>
-                      </button>
                     </div>
 
                     {/* Inline "+ Registrar Cobro" Form */}
                     {showAddPayment && (
                       <form
                         onSubmit={handleAddPaymentEntry}
-                        className="p-3.5 rounded-2xl bg-[var(--card)] border border-[var(--acc)] space-y-2.5"
+                        className="p-3.5 rounded-2xl bg-[var(--card)] border-2 border-[var(--acc)] space-y-2.5"
                       >
-                        <p className="font-extrabold text-[var(--ink)]">
-                          Nuevo ingreso de pago
-                        </p>
+                        <div className="flex items-center justify-between">
+                          <p className="font-extrabold text-[var(--ink)]">
+                            Registrar cobro y enviar acceso
+                          </p>
+                        </div>
                         <div className="grid grid-cols-2 gap-2">
                           <div>
                             <label className="block text-[10px] font-bold text-[var(--mute)] mb-1">
@@ -1220,7 +1630,7 @@ export default function AdminCrmModal({
                               min="0"
                               value={payAmount}
                               onChange={(e) => setPayAmount(e.target.value)}
-                              className="w-full min-h-[38px] px-2.5 text-xs font-mono font-bold bg-[var(--bg)] border border-[var(--line)] rounded-xl"
+                              className="w-full min-h-[40px] px-2.5 text-xs font-mono font-bold bg-[var(--bg)] border border-[var(--line)] rounded-xl"
                             />
                           </div>
                           <div>
@@ -1232,7 +1642,7 @@ export default function AdminCrmModal({
                               onChange={(e) =>
                                 setPayMethod(e.target.value as PaymentMethod)
                               }
-                              className="w-full min-h-[38px] px-2 text-xs font-bold bg-[var(--bg)] border border-[var(--line)] rounded-xl"
+                              className="w-full min-h-[40px] px-2 text-xs font-bold bg-[var(--bg)] border border-[var(--line)] rounded-xl"
                             >
                               {METHODS.filter((m) => m !== 'Por definir').map(
                                 (m) => (
@@ -1249,26 +1659,29 @@ export default function AdminCrmModal({
                           value={payRef}
                           onChange={(e) => setPayRef(e.target.value)}
                           placeholder="Código de operación (opcional)"
-                          className="w-full min-h-[38px] px-2.5 text-xs font-mono bg-[var(--bg)] border border-[var(--line)] rounded-xl"
+                          className="w-full min-h-[40px] px-2.5 text-xs font-mono bg-[var(--bg)] border border-[var(--line)] rounded-xl"
                         />
                         <input
                           type="text"
                           value={payNote}
                           onChange={(e) => setPayNote(e.target.value)}
-                          placeholder="Nota (ej. Renovación mes de diciembre)"
-                          className="w-full min-h-[38px] px-2.5 text-xs bg-[var(--bg)] border border-[var(--line)] rounded-xl"
+                          placeholder="Nota (ej. Renovación o pago inicial)"
+                          className="w-full min-h-[40px] px-2.5 text-xs bg-[var(--bg)] border border-[var(--line)] rounded-xl"
                         />
                         <div className="flex gap-2">
                           <button
                             type="submit"
-                            className="flex-1 min-h-[38px] bg-[var(--acc)] text-[var(--accink)] font-bold rounded-xl cursor-pointer"
+                            disabled={busyAction === 'add_payment'}
+                            className="flex-1 min-h-[40px] bg-[var(--acc)] text-[var(--accink)] font-bold rounded-xl cursor-pointer disabled:opacity-60"
                           >
-                            Confirmar cobro
+                            {busyAction === 'add_payment'
+                              ? 'Registrando...'
+                              : 'Confirmar cobro y activar'}
                           </button>
                           <button
                             type="button"
                             onClick={() => setShowAddPayment(false)}
-                            className="px-3 min-h-[38px] border border-[var(--line)] font-bold rounded-xl cursor-pointer"
+                            className="px-3 min-h-[40px] border border-[var(--line)] font-bold rounded-xl cursor-pointer"
                           >
                             Cancelar
                           </button>
@@ -1276,21 +1689,36 @@ export default function AdminCrmModal({
                       </form>
                     )}
 
-                    {/* Editable Fields */}
-                    <div className="space-y-3">
+                    {/* Full Editable Client Form */}
+                    <form onSubmit={handleSaveDraft} className="space-y-3">
+                      <div>
+                        <label className="block text-[11px] font-bold text-[var(--mute)] mb-1">
+                          Nombre del cliente
+                        </label>
+                        <input
+                          type="text"
+                          value={draft.name}
+                          onChange={(e) =>
+                            setDraft({ ...draft, name: e.target.value })
+                          }
+                          className="w-full min-h-[42px] px-3 font-bold bg-[var(--card)] border border-[var(--line)] rounded-xl"
+                        />
+                      </div>
+
                       <div className="grid grid-cols-2 gap-2.5">
                         <div>
                           <label className="block text-[11px] font-bold text-[var(--mute)] mb-1">
                             Estado de acceso
                           </label>
                           <select
-                            value={selectedClient.status}
+                            value={draft.status}
                             onChange={(e) =>
-                              updateClient(selectedClient.id, {
+                              setDraft({
+                                ...draft,
                                 status: e.target.value as SubscriberStatus,
                               })
                             }
-                            className="w-full min-h-[40px] px-2.5 font-bold bg-[var(--card)] border border-[var(--line)] rounded-xl"
+                            className="w-full min-h-[42px] px-2.5 font-bold bg-[var(--card)] border border-[var(--line)] rounded-xl"
                           >
                             <option value="pendiente">Pendiente</option>
                             <option value="activo">Activo</option>
@@ -1303,13 +1731,14 @@ export default function AdminCrmModal({
                             Estado de pago
                           </label>
                           <select
-                            value={selectedClient.paymentStatus || 'pendiente'}
+                            value={draft.paymentStatus}
                             onChange={(e) =>
-                              updateClient(selectedClient.id, {
+                              setDraft({
+                                ...draft,
                                 paymentStatus: e.target.value as PaymentStatus,
                               })
                             }
-                            className="w-full min-h-[40px] px-2.5 font-bold bg-[var(--card)] border border-[var(--line)] rounded-xl"
+                            className="w-full min-h-[42px] px-2.5 font-bold bg-[var(--card)] border border-[var(--line)] rounded-xl"
                           >
                             <option value="pagado">Pagado</option>
                             <option value="pendiente">Pendiente</option>
@@ -1324,15 +1753,16 @@ export default function AdminCrmModal({
                             Plan
                           </label>
                           <select
-                            value={selectedClient.plan || 'Vitalicio'}
+                            value={draft.plan}
                             onChange={(e) => {
                               const nextPlan = e.target.value as SubscriberPlan;
-                              updateClient(selectedClient.id, {
+                              setDraft({
+                                ...draft,
                                 plan: nextPlan,
-                                amount: PLAN_PRICES[nextPlan],
+                                amount: String(PLAN_PRICES[nextPlan]),
                               });
                             }}
-                            className="w-full min-h-[40px] px-2.5 font-bold bg-[var(--card)] border border-[var(--line)] rounded-xl"
+                            className="w-full min-h-[42px] px-2.5 font-bold bg-[var(--card)] border border-[var(--line)] rounded-xl"
                           >
                             {PLANS.map((p) => (
                               <option key={p} value={p}>
@@ -1349,13 +1779,11 @@ export default function AdminCrmModal({
                             type="number"
                             step="0.01"
                             min="0"
-                            value={selectedClient.amount ?? 75}
+                            value={draft.amount}
                             onChange={(e) =>
-                              updateClient(selectedClient.id, {
-                                amount: Math.max(0, Number(e.target.value) || 0),
-                              })
+                              setDraft({ ...draft, amount: e.target.value })
                             }
-                            className="w-full min-h-[40px] px-2.5 font-mono font-bold bg-[var(--card)] border border-[var(--line)] rounded-xl tabular-nums"
+                            className="w-full min-h-[42px] px-2.5 font-mono font-bold bg-[var(--card)] border border-[var(--line)] rounded-xl tabular-nums"
                           />
                         </div>
                       </div>
@@ -1366,13 +1794,14 @@ export default function AdminCrmModal({
                             Método de pago
                           </label>
                           <select
-                            value={selectedClient.paymentMethod || 'Por definir'}
+                            value={draft.paymentMethod}
                             onChange={(e) =>
-                              updateClient(selectedClient.id, {
+                              setDraft({
+                                ...draft,
                                 paymentMethod: e.target.value as PaymentMethod,
                               })
                             }
-                            className="w-full min-h-[40px] px-2.5 font-bold bg-[var(--card)] border border-[var(--line)] rounded-xl"
+                            className="w-full min-h-[42px] px-2.5 font-bold bg-[var(--card)] border border-[var(--line)] rounded-xl"
                           >
                             {METHODS.map((m) => (
                               <option key={m} value={m}>
@@ -1387,14 +1816,12 @@ export default function AdminCrmModal({
                           </label>
                           <input
                             type="text"
-                            value={selectedClient.paymentRef || ''}
+                            value={draft.paymentRef}
                             onChange={(e) =>
-                              updateClient(selectedClient.id, {
-                                paymentRef: e.target.value,
-                              })
+                              setDraft({ ...draft, paymentRef: e.target.value })
                             }
                             placeholder="Ej. YP-94821"
-                            className="w-full min-h-[40px] px-2.5 font-mono bg-[var(--card)] border border-[var(--line)] rounded-xl"
+                            className="w-full min-h-[42px] px-2.5 font-mono bg-[var(--card)] border border-[var(--line)] rounded-xl"
                           />
                         </div>
                       </div>
@@ -1406,13 +1833,11 @@ export default function AdminCrmModal({
                           </label>
                           <input
                             type="text"
-                            value={selectedClient.phone}
+                            value={draft.phone}
                             onChange={(e) =>
-                              updateClient(selectedClient.id, {
-                                phone: e.target.value,
-                              })
+                              setDraft({ ...draft, phone: e.target.value })
                             }
-                            className="w-full min-h-[40px] px-2.5 font-mono bg-[var(--card)] border border-[var(--line)] rounded-xl"
+                            className="w-full min-h-[42px] px-2.5 font-mono bg-[var(--card)] border border-[var(--line)] rounded-xl"
                           />
                         </div>
                         <div>
@@ -1421,13 +1846,11 @@ export default function AdminCrmModal({
                           </label>
                           <input
                             type="text"
-                            value={selectedClient.city}
+                            value={draft.city}
                             onChange={(e) =>
-                              updateClient(selectedClient.id, {
-                                city: e.target.value,
-                              })
+                              setDraft({ ...draft, city: e.target.value })
                             }
-                            className="w-full min-h-[40px] px-2.5 bg-[var(--card)] border border-[var(--line)] rounded-xl"
+                            className="w-full min-h-[42px] px-2.5 bg-[var(--card)] border border-[var(--line)] rounded-xl"
                           />
                         </div>
                       </div>
@@ -1438,17 +1861,28 @@ export default function AdminCrmModal({
                         </label>
                         <textarea
                           rows={2}
-                          value={selectedClient.notes || ''}
+                          value={draft.notes}
                           onChange={(e) =>
-                            updateClient(selectedClient.id, {
-                              notes: e.target.value,
-                            })
+                            setDraft({ ...draft, notes: e.target.value })
                           }
                           placeholder="Seguimiento, origen del lead, acuerdos..."
                           className="w-full p-2.5 text-xs bg-[var(--card)] border border-[var(--line)] rounded-xl resize-none"
                         />
                       </div>
-                    </div>
+
+                      <button
+                        type="submit"
+                        disabled={busyAction === 'save'}
+                        className="w-full min-h-[44px] bg-[var(--ink)] text-[var(--card)] font-extrabold text-xs rounded-xl hover:opacity-90 transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-60"
+                      >
+                        <Save className="w-4 h-4" />
+                        <span>
+                          {busyAction === 'save'
+                            ? 'Guardando cambios...'
+                            : 'Guardar cambios del cliente'}
+                        </span>
+                      </button>
+                    </form>
 
                     {/* WhatsApp Quick Message Template */}
                     <div className="pt-3 border-t border-[var(--line)] space-y-2">
@@ -1474,7 +1908,7 @@ export default function AdminCrmModal({
                           <span>Copiar texto</span>
                         </button>
                       </div>
-                      <p className="text-[11px] text-[var(--mute)] leading-relaxed bg-[var(--card)] border border-[var(--line)] rounded-xl p-2.5">
+                      <p className="text-[11px] text-[var(--mute)] leading-relaxed bg-[var(--bg)] lg:bg-[var(--card)] border border-[var(--line)] rounded-xl p-2.5">
                         {selectedClient.status === 'activo'
                           ? `¡Hola ${selectedClient.name}! Tu membresía ${selectedClient.plan || 'Vitalicio'} en HOY ya está ACTIVA. Ingresa con tu número ${selectedClient.phone} y recibe tu código OTP aquí.`
                           : `¡Hola ${selectedClient.name}! Recibimos tu solicitud en HOY (${selectedClient.plan || 'Vitalicio'} · ${formatMoney(selectedClient.amount || 75)}). Envíanos tu comprobante por Yape/Plin para activar tu acceso al instante.`}
@@ -1493,7 +1927,7 @@ export default function AdminCrmModal({
                       </div>
 
                       {selectedClient.payments && selectedClient.payments.length > 0 ? (
-                        <div className="divide-y divide-[var(--line)] border border-[var(--line)] rounded-xl bg-[var(--card)]">
+                        <div className="divide-y divide-[var(--line)] border border-[var(--line)] rounded-xl bg-[var(--bg)] lg:bg-[var(--card)]">
                           {selectedClient.payments.map((p) => (
                             <div
                               key={p.id}
@@ -1523,21 +1957,22 @@ export default function AdminCrmModal({
                     </div>
 
                     {/* Delete Client */}
-                    <div className="pt-3 border-t border-[var(--line)] flex items-center justify-between">
+                    <div className="pt-3 border-t border-[var(--line)]">
                       {confirmDeleteId === selectedClient.id ? (
-                        <div className="flex items-center gap-2 w-full">
-                          <span className="text-[11px] font-bold text-[#DC2626] flex-1">
-                            ¿Eliminar este cliente?
+                        <div className="p-3 rounded-xl border border-red-500/30 bg-red-500/10 flex items-center gap-2 w-full">
+                          <span className="text-xs font-bold text-[#DC2626] flex-1">
+                            ¿Eliminar definitivamente a {selectedClient.name}?
                           </span>
                           <button
-                            onClick={() => handleDeleteClient(selectedClient.id)}
-                            className="px-3 py-1.5 bg-[#DC2626] text-white font-bold rounded-lg text-[11px] cursor-pointer"
+                            disabled={busyAction === `delete-${selectedClient.id}`}
+                            onClick={() => void handleDeleteClient(selectedClient)}
+                            className="min-h-[36px] px-3 bg-[#DC2626] text-white font-bold rounded-lg text-xs cursor-pointer"
                           >
                             Sí, eliminar
                           </button>
                           <button
                             onClick={() => setConfirmDeleteId(null)}
-                            className="px-3 py-1.5 border border-[var(--line)] font-bold rounded-lg text-[11px] cursor-pointer"
+                            className="min-h-[36px] px-3 border border-[var(--line)] bg-[var(--card)] font-bold rounded-lg text-xs cursor-pointer"
                           >
                             No
                           </button>
@@ -1545,10 +1980,10 @@ export default function AdminCrmModal({
                       ) : (
                         <button
                           onClick={() => setConfirmDeleteId(selectedClient.id)}
-                          className="text-[11px] font-bold text-[#DC2626] hover:underline flex items-center gap-1.5 cursor-pointer"
+                          className="w-full min-h-[42px] rounded-xl border border-red-500/30 bg-red-500/10 text-xs font-bold text-[#DC2626] hover:bg-red-500/20 flex items-center justify-center gap-1.5 cursor-pointer transition"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>Eliminar cliente</span>
+                          <Trash2 className="w-4 h-4" />
+                          <span>Eliminar cliente registrado</span>
                         </button>
                       )}
                     </div>
@@ -1559,8 +1994,7 @@ export default function AdminCrmModal({
           ) : (
             /* Analytics & Earnings Tab */
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
-              {/* 7-Day Revenue Bar Chart */}
-              <div className="rounded-2xl border border-[var(--line)] bg-[var(--bg)]/40 p-5 space-y-4">
+              <div className="rounded-2xl border border-[var(--line)] bg-[var(--bg)]/40 p-4 sm:p-5 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h3 className="text-sm font-extrabold text-[var(--ink)]">
@@ -1608,9 +2042,7 @@ export default function AdminCrmModal({
                 </div>
               </div>
 
-              {/* 3 Breakdown Grids: Plans, Payment Methods, Cities */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                {/* Ganancias por Plan */}
                 <div className="rounded-2xl border border-[var(--line)] bg-[var(--bg)]/40 p-5 space-y-3.5">
                   <h4 className="text-sm font-extrabold">Ganancias por plan</h4>
                   <div className="space-y-3">
@@ -1642,7 +2074,6 @@ export default function AdminCrmModal({
                   </div>
                 </div>
 
-                {/* Ganancias por Método de Pago */}
                 <div className="rounded-2xl border border-[var(--line)] bg-[var(--bg)]/40 p-5 space-y-3.5">
                   <h4 className="text-sm font-extrabold">Por método de pago</h4>
                   {metrics.byMethod.length > 0 ? (
@@ -1681,7 +2112,6 @@ export default function AdminCrmModal({
                   )}
                 </div>
 
-                {/* Top Ciudades */}
                 <div className="rounded-2xl border border-[var(--line)] bg-[var(--bg)]/40 p-5 space-y-3.5">
                   <h4 className="text-sm font-extrabold">Clientes por ciudad</h4>
                   <div className="divide-y divide-[var(--line)]">
