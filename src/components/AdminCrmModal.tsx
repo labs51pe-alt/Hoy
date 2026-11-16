@@ -19,6 +19,7 @@ import {
   Edit3,
   MessageSquare,
   Calendar,
+  RefreshCw,
 } from 'lucide-react';
 
 export type SubscriberStatus = 'pendiente' | 'activo' | 'pausado' | 'vencido';
@@ -43,6 +44,7 @@ export interface PaymentEntry {
 
 export interface SubscriberRecord {
   id: number;
+  dbId?: string;
   name: string;
   phone: string;
   city: string;
@@ -64,6 +66,19 @@ interface AdminCrmModalProps {
   onClose: () => void;
   onNotify: (msg: string) => void;
   todayStr: string;
+  isSyncing?: boolean;
+  onRefreshCloud?: () => Promise<void>;
+  onCreateSubscriber?: (record: SubscriberRecord) => Promise<SubscriberRecord | void>;
+  onPatchSubscriber?: (
+    sub: SubscriberRecord,
+    patch: Partial<SubscriberRecord>
+  ) => Promise<SubscriberRecord | void>;
+  onApproveSubscriber?: (sub: SubscriberRecord) => Promise<SubscriberRecord | void>;
+  onAddPaymentEntry?: (
+    sub: SubscriberRecord,
+    entry: PaymentEntry
+  ) => Promise<SubscriberRecord | void>;
+  onDeleteSubscriber?: (sub: SubscriberRecord) => Promise<void>;
 }
 
 const PLAN_PRICES: Record<SubscriberPlan, number> = {
@@ -152,6 +167,13 @@ export default function AdminCrmModal({
   onClose,
   onNotify,
   todayStr,
+  isSyncing,
+  onRefreshCloud,
+  onCreateSubscriber,
+  onPatchSubscriber,
+  onApproveSubscriber,
+  onAddPaymentEntry,
+  onDeleteSubscriber,
 }: AdminCrmModalProps) {
   const normalizedList = useMemo(
     () =>
@@ -343,10 +365,20 @@ export default function AdminCrmModal({
   }, [normalizedList, searchQuery, statusFilter, planFilter, sortBy]);
 
   const updateClient = (id: number, patch: Partial<SubscriberRecord>) => {
+    const target = normalizedList.find((s) => s.id === id);
     const next = normalizedList.map((s) =>
       s.id === id ? normalizeSubscriber({ ...s, ...patch }) : s
     );
     onUpdateSubscribers(next);
+    if (target && onPatchSubscriber) {
+      void onPatchSubscriber(target, patch).then((synced) => {
+        if (synced) {
+          onUpdateSubscribers(
+            next.map((s) => (s.id === id ? normalizeSubscriber(synced) : s))
+          );
+        }
+      });
+    }
   };
 
   const approvePayment = (sub: SubscriberRecord) => {
@@ -370,15 +402,29 @@ export default function AdminCrmModal({
             },
           ];
 
-    updateClient(sub.id, {
+    const optimisticPatch: Partial<SubscriberRecord> = {
       status: 'activo',
       paymentStatus: 'pagado',
       paymentMethod: method,
       amount,
       approvedAt: todayStr,
       payments: nextPayments,
-    });
+    };
+    const next = normalizedList.map((s) =>
+      s.id === sub.id ? normalizeSubscriber({ ...s, ...optimisticPatch }) : s
+    );
+    onUpdateSubscribers(next);
     onNotify(`Pago aprobado (${formatMoney(amount)}) y acceso activado para ${sub.name}.`);
+
+    if (onApproveSubscriber) {
+      void onApproveSubscriber(sub).then((synced) => {
+        if (synced) {
+          onUpdateSubscribers(
+            next.map((s) => (s.id === sub.id ? normalizeSubscriber(synced) : s))
+          );
+        }
+      });
+    }
   };
 
   const handleAddNewClient = (e: React.FormEvent) => {
@@ -420,7 +466,8 @@ export default function AdminCrmModal({
         : [],
     };
 
-    onUpdateSubscribers([newRecord, ...normalizedList]);
+    const nextList = [newRecord, ...normalizedList];
+    onUpdateSubscribers(nextList);
     setShowNewForm(false);
     setNewName('');
     setNewPhone('');
@@ -428,6 +475,18 @@ export default function AdminCrmModal({
     setNewRef('');
     setSelectedId(newRecord.id);
     onNotify(`Cliente ${cleanName} registrado en el CRM.`);
+
+    if (onCreateSubscriber) {
+      void onCreateSubscriber(newRecord).then((synced) => {
+        if (synced) {
+          const normalizedSynced = normalizeSubscriber(synced);
+          onUpdateSubscribers(
+            nextList.map((s) => (s.id === newRecord.id ? normalizedSynced : s))
+          );
+          setSelectedId(normalizedSynced.id);
+        }
+      });
+    }
   };
 
   const handleAddPaymentEntry = (e: React.FormEvent) => {
@@ -449,19 +508,35 @@ export default function AdminCrmModal({
     };
 
     const nextPayments = [entry, ...(selectedClient.payments || [])];
-    updateClient(selectedClient.id, {
+    const patch: Partial<SubscriberRecord> = {
       status: 'activo',
       paymentStatus: 'pagado',
       paymentMethod: payMethod,
       paymentRef: payRef.trim() || selectedClient.paymentRef,
       approvedAt: todayStr,
       payments: nextPayments,
-    });
+    };
+    const next = normalizedList.map((s) =>
+      s.id === selectedClient.id ? normalizeSubscriber({ ...s, ...patch }) : s
+    );
+    onUpdateSubscribers(next);
 
     setShowAddPayment(false);
     setPayRef('');
     setPayNote('');
     onNotify(`Cobro de ${formatMoney(amt)} registrado para ${selectedClient.name}.`);
+
+    if (onAddPaymentEntry) {
+      void onAddPaymentEntry(selectedClient, entry).then((synced) => {
+        if (synced) {
+          onUpdateSubscribers(
+            next.map((s) =>
+              s.id === selectedClient.id ? normalizeSubscriber(synced) : s
+            )
+          );
+        }
+      });
+    }
   };
 
   const handleDeleteClient = (id: number) => {
@@ -470,6 +545,9 @@ export default function AdminCrmModal({
     if (selectedId === id) setSelectedId(null);
     setConfirmDeleteId(null);
     onNotify(`Cliente ${target?.name || ''} eliminado del CRM.`);
+    if (target && onDeleteSubscriber) {
+      void onDeleteSubscriber(target);
+    }
   };
 
   const exportCsv = () => {
@@ -611,6 +689,19 @@ export default function AdminCrmModal({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            {onRefreshCloud && (
+              <button
+                onClick={() => void onRefreshCloud()}
+                disabled={isSyncing}
+                aria-label="Sincronizar clientes con Supabase"
+                className="min-h-[40px] min-w-[40px] px-2.5 border border-[var(--line)] bg-[var(--bg)] text-[var(--ink)] font-bold text-xs rounded-xl hover:border-[var(--acc)] transition cursor-pointer flex items-center justify-center gap-1.5"
+                title="Sincronizar con Supabase"
+              >
+                <RefreshCw
+                  className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`}
+                />
+              </button>
+            )}
             <button
               onClick={() => {
                 setShowNewForm((v) => !v);

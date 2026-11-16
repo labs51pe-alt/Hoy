@@ -4,7 +4,6 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { createClient } from '@supabase/supabase-js';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   CheckCircle2,
@@ -43,17 +42,16 @@ import {
   EyeOff,
 } from 'lucide-react';
 import AdminCrmModal, {
+  PaymentEntry,
   SubscriberPlan,
   SubscriberRecord,
 } from './components/AdminCrmModal';
 
 // ==========================================
-// CONFIGURACIÓN DE SUPABASE Y CONSTANTES
+// CONFIGURACIÓN Y CONSTANTES
 // ==========================================
-const DEFAULT_SUPABASE_URL = 'PEGA_AQUI_TU_URL';
-const DEFAULT_SUPABASE_KEY = 'PEGA_AQUI_TU_ANON_KEY';
-
 const STORAGE_KEY = 'progreso-v10';
+const SESSION_TOKEN_KEY = 'hoy_session_token';
 
 const ST = [
   ['ideas', 'Ideas'],
@@ -727,18 +725,34 @@ export default function App() {
     }));
   };
 
-  // Supabase Auth & Sync
-  const [supabaseUrl, setSupabaseUrl] = useState(
-    () => localStorage.getItem('sb_url') || DEFAULT_SUPABASE_URL
-  );
-  const [supabaseKey, setSupabaseKey] = useState(
-    () => localStorage.getItem('sb_key') || DEFAULT_SUPABASE_KEY
-  );
-  const [sbClient, setSbClient] = useState<any>(null);
-  const [user, setUser] = useState<any>(null);
-  const [authEmail, setAuthEmail] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
+  // Sesión WhatsApp OTP y Sincronización Backend (/api/* -> Supabase)
+  const [sessionToken, setSessionToken] = useState<string>(() => {
+    try {
+      return localStorage.getItem(SESSION_TOKEN_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+  const [cloudStatus, setCloudStatus] = useState<{
+    checked: boolean;
+    supabaseConfigured: boolean;
+    n8nConfigured: boolean;
+  }>({
+    checked: false,
+    supabaseConfigured: false,
+    n8nConfigured: false,
+  });
+  const [activeProfile, setActiveProfile] = useState<{
+    id: string;
+    name: string;
+    phone: string;
+    plan?: string;
+  } | null>(null);
   const [showConfigModal, setShowConfigModal] = useState(false);
+  const [adminVerifiedPin, setAdminVerifiedPin] = useState('');
+  const [crmSyncing, setCrmSyncing] = useState(false);
+  const [isAuthBusy, setIsAuthBusy] = useState(false);
+  const [isRegBusy, setIsRegBusy] = useState(false);
 
   // Notificación Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -861,14 +875,59 @@ export default function App() {
   const logoClickTimerRef = useRef<any>(null);
   const navWelcomeTimerRef = useRef<any>(null);
 
-  const handleAdminPinSubmit = (e?: React.FormEvent) => {
+  const fetchAdminSubscribers = async (pin: string) => {
+    setCrmSyncing(true);
+    try {
+      const res = await fetch('/api/admin/subscribers', {
+        headers: { 'x-admin-pin': pin },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.mode === 'supabase' && Array.isArray(data.subscribers)) {
+        setState((prev: any) => ({ ...prev, subscribers: data.subscribers }));
+      }
+    } catch {
+      // Mantiene datos locales si no hay conexión
+    } finally {
+      setCrmSyncing(false);
+    }
+  };
+
+  const handleAdminPinSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (adminPinInput.trim() === '1982') {
+    const pin = adminPinInput.trim();
+    if (!pin) {
+      setAdminPinError('Ingresa tu clave de administrador.');
+      return;
+    }
+
+    let verified = false;
+    try {
+      const res = await fetch('/api/admin/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        verified = Boolean(data.ok);
+      } else if (res.status === 401) {
+        verified = false;
+      } else {
+        verified = pin === '1982';
+      }
+    } catch {
+      verified = pin === '1982';
+    }
+
+    if (verified) {
+      setAdminVerifiedPin(pin);
       setAdminPinModal(false);
       setAdminPinInput('');
       setAdminPinError('');
       setShowAdminPin(false);
       setShowAdminCrmModal(true);
+      void fetchAdminSubscribers(pin);
     } else {
       setAdminPinError('Clave incorrecta. Intenta de nuevo.');
       say('Clave incorrecta.');
@@ -907,7 +966,8 @@ export default function App() {
   const [lastRegSummary, setLastRegSummary] = useState<{
     plan: SubscriberPlan;
     amount: number;
-  }>({ plan: 'Vitalicio', amount: 75 });
+    whatsappSent?: boolean;
+  }>({ plan: 'Vitalicio', amount: 75, whatsappSent: false });
 
   // Estados para el flujo de inicio de sesión por WhatsApp OTP al dar Comenzar
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -916,6 +976,7 @@ export default function App() {
   const [loginPhoneNum, setLoginPhoneNum] = useState('');
   const [loginOtpCode, setLoginOtpCode] = useState('');
   const [simulatedOtp, setSimulatedOtp] = useState('');
+  const [otpHintMessage, setOtpHintMessage] = useState('');
 
   const openDayOrganizer = (target: 'today' | 'tomorrow') => {
     const targetDateStr = target === 'tomorrow' ? tomorrowYmd() : ymd(new Date());
@@ -1159,38 +1220,60 @@ export default function App() {
   };
 
   useEffect(() => {
-    try {
-      if (
-        supabaseUrl &&
-        supabaseUrl.startsWith('http') &&
-        supabaseKey &&
-        supabaseKey !== 'PEGA_AQUI_TU_ANON_KEY'
-      ) {
-        const client = createClient(supabaseUrl, supabaseKey);
-        setSbClient(client);
+    let active = true;
+    const initCloud = async () => {
+      try {
+        const healthRes = await fetch('/api/health');
+        if (healthRes.ok && active) {
+          const healthData = await healthRes.json();
+          setCloudStatus({
+            checked: true,
+            supabaseConfigured: Boolean(healthData.supabaseConfigured),
+            n8nConfigured: Boolean(healthData.n8nConfigured),
+          });
 
-        client.auth.getSession().then(({ data: { session } }: any) => {
-          const u = session?.user || null;
-          setUser(u);
-          if (u) pullData(client, u.id);
-        });
-
-        const {
-          data: { subscription },
-        } = client.auth.onAuthStateChange((_event: any, session: any) => {
-          const u = session?.user || null;
-          setUser(u);
-          if (u) pullData(client, u.id);
-        });
-
-        return () => {
-          subscription?.unsubscribe();
-        };
+          if (healthData.supabaseConfigured && sessionToken) {
+            const sessRes = await fetch('/api/auth/session', {
+              headers: { Authorization: `Bearer ${sessionToken}` },
+            });
+            if (sessRes.ok && active) {
+              const sessData = await sessRes.json();
+              if (sessData.authenticated && sessData.profile) {
+                setActiveProfile(sessData.profile);
+                if (sessData.progressData && typeof sessData.progressData === 'object') {
+                  setState((prev: any) => ({
+                    ...prev,
+                    ...sessData.progressData,
+                    subscribers: prev.subscribers,
+                  }));
+                }
+              } else if (sessData.mode === 'supabase') {
+                setActiveProfile(null);
+                setSessionToken('');
+                try {
+                  localStorage.removeItem(SESSION_TOKEN_KEY);
+                } catch {
+                  // Ignore storage errors
+                }
+              }
+            }
+          }
+        }
+      } catch {
+        if (active) {
+          setCloudStatus({
+            checked: true,
+            supabaseConfigured: false,
+            n8nConfigured: false,
+          });
+        }
       }
-    } catch (e) {
-      console.error(e);
-    }
-  }, [supabaseUrl, supabaseKey]);
+    };
+    void initCloud();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -1199,38 +1282,45 @@ export default function App() {
       // Ignore storage quota errors
     }
 
-    if (sbClient && user) {
+    if (cloudStatus.supabaseConfigured && sessionToken) {
       const timer = setTimeout(() => {
-        sbClient
-          .from('progreso')
-          .upsert({
-            user_id: user.id,
-            data: state,
-            updated_at: new Date().toISOString(),
-          })
-          .then(({ error }: any) => {
-            if (error) {
-              say('Guardado en este dispositivo (sin conexión a nube).');
-            }
-          });
-      }, 800);
+        const { subscribers: _omitSubscribers, ...userProgressPayload } = state;
+        void fetch('/api/progress', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${sessionToken}`,
+          },
+          body: JSON.stringify({ data: userProgressPayload }),
+        }).catch(() => {
+          // Persiste localmente en caso de corte temporal de red
+        });
+      }, 900);
       return () => clearTimeout(timer);
     }
-  }, [state, sbClient, user]);
+  }, [state, cloudStatus.supabaseConfigured, sessionToken]);
 
-  const pullData = async (client: any, userId: string) => {
-    try {
-      const { data } = await client
-        .from('progreso')
-        .select('data')
-        .eq('user_id', userId)
-        .maybeSingle();
-      if (data?.data?.projects) {
-        setState((prev: any) => ({ ...prev, ...data.data }));
+  const handleLogoutCloudSession = async () => {
+    if (sessionToken && cloudStatus.supabaseConfigured) {
+      try {
+        await fetch('/api/auth/session', {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${sessionToken}` },
+        });
+      } catch {
+        // Ignore network errors on logout
       }
-    } catch (e) {
-      console.error(e);
     }
+    try {
+      localStorage.removeItem(SESSION_TOKEN_KEY);
+    } catch {
+      // Ignore storage errors
+    }
+    setSessionToken('');
+    setActiveProfile(null);
+    setShowConfigModal(false);
+    setState((prev: any) => ({ ...prev, view: 'welcome', hasStarted: false }));
+    say('Sesión cerrada.');
   };
 
   function say(msg: string) {
@@ -1541,7 +1631,6 @@ export default function App() {
   // Respaldo inteligente en la mañana: SOLO si anoche no organizaste ni confirmaste hoy
   useEffect(() => {
     if (introSplash || state.view !== 'hoy') return;
-    if (sbClient && !user) return;
     if (dayOrganizerTarget || showEveningPrompt) return;
 
     const todayStr = ymd(new Date());
@@ -1555,8 +1644,6 @@ export default function App() {
   }, [
     introSplash,
     state.view,
-    sbClient,
-    user,
     dayOrganizerTarget,
     showEveningPrompt,
     state.plannedDays,
@@ -2011,7 +2098,17 @@ export default function App() {
             <motion.button
               whileTap={{ scale: 0.98 }}
               onClick={() => {
-                setShowLoginModal(true);
+                if (activeProfile && sessionToken) {
+                  setState((prev: any) => ({
+                    ...prev,
+                    view: 'hoy',
+                    hasStarted: true,
+                  }));
+                  window.scrollTo(0, 0);
+                  say(`¡Hola de nuevo, ${activeProfile.name}!`);
+                } else {
+                  setShowLoginModal(true);
+                }
               }}
               className={`w-full min-h-[54px] px-6 rounded-2xl font-extrabold text-base flex items-center justify-between transition cursor-pointer shadow-xl border ${
                 isDark
@@ -2116,9 +2213,9 @@ export default function App() {
 
                 <button
                   onClick={() => setShowConfigModal(true)}
-                  aria-label="Configuración de Supabase"
+                  aria-label="Cuenta y respaldo"
                   className="min-h-[40px] min-w-[40px] rounded-xl border border-[var(--line)] bg-[var(--card)] text-[var(--mute)] hover:text-[var(--ink)] hover:border-[var(--acc)] transition flex items-center justify-center cursor-pointer"
-                  title="Configurar Supabase"
+                  title="Cuenta y respaldo"
                 >
                   <Settings className="w-4 h-4" />
                 </button>
@@ -2269,97 +2366,7 @@ export default function App() {
                 </motion.div>
               )}
             </AnimatePresence>
-            {sbClient && !user ? (
-              <motion.div
-                key="login"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="max-w-md mx-auto bg-[var(--card)] border border-[var(--line)] shadow-sm rounded-3xl p-6 sm:p-8 space-y-5"
-              >
-                <div className="flex items-center gap-3.5">
-                  <div className="w-12 h-12 rounded-2xl bg-[var(--acc)]/12 text-[var(--acc)] flex items-center justify-center shrink-0">
-                    <ShieldCheck className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h2 className="text-xl font-extrabold tracking-tight">
-                      Sincronización en la nube
-                    </h2>
-                    <p className="text-xs text-[var(--mute)]">
-                      Inicia sesión con tu cuenta Supabase para respaldar tu progreso.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-bold text-[var(--mute)] mb-1.5">
-                      Correo electrónico
-                    </label>
-                    <input
-                      type="text"
-                      inputMode="email"
-                      autoComplete="email"
-                      value={authEmail}
-                      onChange={(e) => setAuthEmail(e.target.value)}
-                      placeholder="tu@correo.com"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-[var(--mute)] mb-1.5">
-                      Contraseña
-                    </label>
-                    <input
-                      type="password"
-                      autoComplete="current-password"
-                      value={authPassword}
-                      onChange={(e) => setAuthPassword(e.target.value)}
-                      placeholder="••••••••"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-2.5 pt-2">
-                  <button
-                    onClick={() => {
-                      if (!authEmail || !authPassword) {
-                        say('Escribe correo y contraseña.');
-                        return;
-                      }
-                      sbClient.auth
-                        .signInWithPassword({
-                          email: authEmail,
-                          password: authPassword,
-                        })
-                        .then(({ error }: any) => {
-                          if (error) say('Credenciales incorrectas.');
-                        });
-                    }}
-                    className="w-full min-h-[48px] bg-[var(--acc)] text-[var(--accink)] rounded-xl font-bold text-sm transition hover:opacity-95 cursor-pointer"
-                  >
-                    Iniciar sesión
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (!authEmail || !authPassword) {
-                        say('Escribe correo y contraseña.');
-                        return;
-                      }
-                      sbClient.auth
-                        .signUp({ email: authEmail, password: authPassword })
-                        .then(({ error, data }: any) => {
-                          if (error) say(error.message);
-                          else if (!data?.session)
-                            say('Revisa tu correo para confirmar tu cuenta.');
-                        });
-                    }}
-                    className="w-full min-h-[48px] border border-[var(--line)] rounded-xl font-bold text-sm hover:border-[var(--acc)] transition cursor-pointer"
-                  >
-                    Crear cuenta nueva
-                  </button>
-                </div>
-              </motion.div>
-            ) : (
-              <AnimatePresence mode="wait">
+            <AnimatePresence mode="wait">
                 {/* VISTA HOY */}
                 {state.view === 'hoy' &&
                   (() => {
@@ -2886,13 +2893,13 @@ export default function App() {
                             );
                           })()}
 
-                          {user && (
+                          {activeProfile && (
                             <button
-                              onClick={() => sbClient?.auth?.signOut()}
+                              onClick={() => void handleLogoutCloudSession()}
                               className="w-full min-h-[44px] border border-[var(--line)] bg-[var(--card)] rounded-xl text-xs font-bold text-[var(--mute)] hover:text-red-500 hover:border-red-500/40 flex items-center justify-center gap-2 transition cursor-pointer"
                             >
                               <LogOut className="w-3.5 h-3.5" />
-                              <span>Cerrar sesión en Supabase</span>
+                              <span>Cerrar sesión ({activeProfile.phone})</span>
                             </button>
                           )}
                         </div>
@@ -3879,7 +3886,6 @@ export default function App() {
                   </motion.div>
                 )}
               </AnimatePresence>
-            )}
           </main>
 
           {/* Barra inferior fija estilo app nativa */}
@@ -4459,63 +4465,99 @@ export default function App() {
         </div>
       )}
 
-      {/* Modal Configuración Supabase */}
+      {/* Modal Cuenta y Respaldo (sin inputs de API keys) */}
       {showConfigModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <motion.div
             initial={{ opacity: 0, scale: 0.96 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="w-full max-w-md rounded-3xl bg-[var(--card)] text-[var(--ink)] p-6 shadow-2xl border border-[var(--line)] max-h-[90vh] overflow-y-auto space-y-4"
+            className="w-full max-w-md rounded-3xl bg-[var(--card)] text-[var(--ink)] p-6 shadow-2xl border border-[var(--line)] max-h-[90vh] overflow-y-auto space-y-5"
           >
-            <div>
-              <h3 className="text-lg font-extrabold tracking-tight">
-                Sincronización Supabase
-              </h3>
-              <p className="text-xs text-[var(--mute)] mt-1">
-                Conecta tu proyecto Supabase para guardar tus datos en la nube (Project Settings &gt; API).
-              </p>
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-[var(--mute)] mb-1">
-                Supabase URL
-              </label>
-              <input
-                type="text"
-                value={supabaseUrl}
-                onChange={(e) => setSupabaseUrl(e.target.value)}
-                placeholder="https://xxx.supabase.co"
-                className="text-xs"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-[var(--mute)] mb-1">
-                Supabase Anon Key
-              </label>
-              <input
-                type="text"
-                value={supabaseKey}
-                onChange={(e) => setSupabaseKey(e.target.value)}
-                placeholder="eyJhbGci..."
-                className="text-xs"
-              />
-            </div>
-            <div className="flex gap-2.5 pt-2">
-              <button
-                onClick={() => {
-                  localStorage.setItem('sb_url', supabaseUrl);
-                  localStorage.setItem('sb_key', supabaseKey);
-                  setShowConfigModal(false);
-                  window.location.reload();
-                }}
-                className="flex-1 min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-bold text-sm rounded-xl cursor-pointer hover:opacity-95 transition"
-              >
-                Guardar y recargar
-              </button>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-[var(--acc)]/12 text-[var(--acc)] flex items-center justify-center shrink-0">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-extrabold tracking-tight">
+                    Cuenta y Respaldo
+                  </h3>
+                  <p className="text-xs text-[var(--mute)] mt-0.5">
+                    {cloudStatus.supabaseConfigured
+                      ? 'Sincronización automática activa con Supabase.'
+                      : 'Guardado localmente en este navegador.'}
+                  </p>
+                </div>
+              </div>
               <button
                 onClick={() => setShowConfigModal(false)}
-                className="min-h-[48px] px-5 border border-[var(--line)] font-bold text-sm rounded-xl hover:border-[var(--acc)] cursor-pointer transition"
+                aria-label="Cerrar"
+                className="min-h-[36px] min-w-[36px] rounded-xl text-[var(--mute)] hover:text-[var(--ink)] flex items-center justify-center cursor-pointer"
               >
-                Cerrar
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {activeProfile ? (
+              <div className="rounded-2xl border border-[var(--line)] bg-[var(--bg)] p-4 space-y-1.5 text-xs">
+                <p className="font-extrabold text-[var(--ink)] text-sm">
+                  {activeProfile.name}
+                </p>
+                <p className="font-mono font-bold text-[var(--acc)]">
+                  {activeProfile.phone}
+                </p>
+                <p className="text-[var(--mute)]">
+                  Plan {activeProfile.plan || 'Vitalicio'} · Sesión vigente por 7 días
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-[var(--line)] bg-[var(--bg)] p-4 text-xs text-[var(--mute)] leading-relaxed">
+                Tus rutinas y proyectos se guardan automáticamente en este dispositivo. Inicia sesión desde portada con tu WhatsApp para sincronizar entre dispositivos.
+              </div>
+            )}
+
+            <div className="space-y-2.5">
+              <button
+                onClick={() => {
+                  try {
+                    const { subscribers: _omit, ...exportPayload } = state;
+                    const blob = new Blob([JSON.stringify(exportPayload, null, 2)], {
+                      type: 'application/json;charset=utf-8',
+                    });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `hoy-respaldo-${ymd(new Date())}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    say('Respaldo descargado.');
+                  } catch {
+                    say('No se pudo exportar el respaldo.');
+                  }
+                }}
+                className="w-full min-h-[46px] border border-[var(--line)] bg-[var(--bg)] font-bold text-xs rounded-xl hover:border-[var(--acc)] cursor-pointer flex items-center justify-center gap-2 transition"
+              >
+                <Download className="w-4 h-4" />
+                <span>Descargar respaldo JSON</span>
+              </button>
+
+              {activeProfile && (
+                <button
+                  onClick={() => void handleLogoutCloudSession()}
+                  className="w-full min-h-[46px] border border-red-500/30 bg-red-500/8 text-red-500 font-bold text-xs rounded-xl hover:bg-red-500/15 cursor-pointer flex items-center justify-center gap-2 transition"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span>Cerrar sesión en este dispositivo</span>
+                </button>
+              )}
+
+              <button
+                onClick={() => setShowConfigModal(false)}
+                className="w-full min-h-[46px] bg-[var(--acc)] text-[var(--accink)] font-bold text-sm rounded-xl hover:opacity-95 cursor-pointer transition"
+              >
+                Listo
               </button>
             </div>
           </motion.div>
@@ -4795,7 +4837,8 @@ export default function App() {
 
             <div className="flex gap-2.5 pt-2">
               <button
-                onClick={() => {
+                disabled={isRegBusy}
+                onClick={async () => {
                   const name = regName.trim();
                   const phoneNumClean = regPhoneNum.trim();
                   const city = regCity.trim();
@@ -4807,7 +4850,9 @@ export default function App() {
                   const planAmount =
                     regPlan === 'Vitalicio' ? 75 : regPlan === 'Trimestral' ? 55 : 25;
                   const phone = `${regCountryCode} ${phoneNumClean}`;
-                  const newSub: SubscriberRecord = {
+
+                  setIsRegBusy(true);
+                  let createdSub: SubscriberRecord = {
                     id: Date.now(),
                     name,
                     phone,
@@ -4820,13 +4865,53 @@ export default function App() {
                     date: ymd(new Date()),
                     payments: [],
                   };
+                  let whatsappSent = false;
+
+                  try {
+                    const res = await fetch('/api/register', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        name,
+                        countryCode: regCountryCode,
+                        phoneNum: phoneNumClean,
+                        city: city || 'No especificada',
+                        plan: regPlan,
+                      }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) {
+                      say(data.error || 'No se pudo completar el registro.');
+                      setIsRegBusy(false);
+                      return;
+                    }
+                    if (data.subscriber) {
+                      createdSub = data.subscriber;
+                    }
+                    whatsappSent = Boolean(data.whatsappSent);
+                  } catch {
+                    // Respaldo local en caso de estar offline
+                  } finally {
+                    setIsRegBusy(false);
+                  }
 
                   setState((prev: any) => ({
                     ...prev,
-                    subscribers: [newSub, ...(prev.subscribers || [])],
+                    subscribers: [
+                      createdSub,
+                      ...(prev.subscribers || []).filter(
+                        (s: any) =>
+                          s.phone.replace(/\s+/g, '') !==
+                          createdSub.phone.replace(/\s+/g, '')
+                      ),
+                    ],
                   }));
 
-                  setLastRegSummary({ plan: regPlan, amount: planAmount });
+                  setLastRegSummary({
+                    plan: regPlan,
+                    amount: planAmount,
+                    whatsappSent,
+                  });
                   setShowRegisterModal(false);
                   setRegName('');
                   setRegCountryCode('+51');
@@ -4835,9 +4920,9 @@ export default function App() {
                   setRegPlan('Vitalicio');
                   setShowPaymentModal(true);
                 }}
-                className="flex-1 min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-xl cursor-pointer hover:opacity-95 transition"
+                className="flex-1 min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-xl cursor-pointer hover:opacity-95 disabled:opacity-60 transition"
               >
-                Enviar y ver pago por WhatsApp
+                {isRegBusy ? 'Registrando...' : 'Enviar y ver pago por WhatsApp'}
               </button>
               <button
                 onClick={() => setShowRegisterModal(false)}
@@ -4870,7 +4955,9 @@ export default function App() {
                   Instrucciones de pago
                 </h3>
                 <p className="text-xs text-[var(--mute)] mt-1 leading-relaxed">
-                  Te hemos enviado los detalles a tu WhatsApp (simulado). Realiza tu pago mediante los siguientes métodos:
+                  {lastRegSummary.whatsappSent
+                    ? 'Te hemos enviado los detalles a tu WhatsApp. Realiza tu pago mediante los siguientes métodos:'
+                    : 'Guarda estas instrucciones de pago y envía tu comprobante por WhatsApp:'}
                 </p>
               </div>
             </div>
@@ -4974,6 +5061,81 @@ export default function App() {
           onClose={() => setShowAdminCrmModal(false)}
           onNotify={say}
           todayStr={ymd(new Date())}
+          isSyncing={crmSyncing}
+          onRefreshCloud={() => fetchAdminSubscribers(adminVerifiedPin || '1982')}
+          onCreateSubscriber={async (record) => {
+            if (!cloudStatus.supabaseConfigured) return;
+            const res = await fetch('/api/admin/subscribers', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-admin-pin': adminVerifiedPin || '1982',
+              },
+              body: JSON.stringify(record),
+            });
+            const data = await res.json();
+            if (res.ok && data.subscriber) return data.subscriber;
+          }}
+          onPatchSubscriber={async (sub, patch) => {
+            if (!cloudStatus.supabaseConfigured || !sub.dbId) return;
+            const res = await fetch('/api/admin/subscribers', {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-admin-pin': adminVerifiedPin || '1982',
+              },
+              body: JSON.stringify({
+                dbId: sub.dbId,
+                action: 'update',
+                patch,
+              }),
+            });
+            const data = await res.json();
+            if (res.ok && data.subscriber) return data.subscriber;
+          }}
+          onApproveSubscriber={async (sub) => {
+            if (!cloudStatus.supabaseConfigured || !sub.dbId) return;
+            const res = await fetch('/api/admin/subscribers', {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-admin-pin': adminVerifiedPin || '1982',
+              },
+              body: JSON.stringify({
+                dbId: sub.dbId,
+                action: 'approve',
+                amount: sub.amount,
+              }),
+            });
+            const data = await res.json();
+            if (res.ok && data.subscriber) return data.subscriber;
+          }}
+          onAddPaymentEntry={async (sub, entry: PaymentEntry) => {
+            if (!cloudStatus.supabaseConfigured || !sub.dbId) return;
+            const res = await fetch('/api/admin/subscribers', {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-admin-pin': adminVerifiedPin || '1982',
+              },
+              body: JSON.stringify({
+                dbId: sub.dbId,
+                action: 'add_payment',
+                payment: entry,
+              }),
+            });
+            const data = await res.json();
+            if (res.ok && data.subscriber) return data.subscriber;
+          }}
+          onDeleteSubscriber={async (sub) => {
+            if (!cloudStatus.supabaseConfigured || !sub.dbId) return;
+            await fetch(`/api/admin/subscribers?id=${encodeURIComponent(sub.dbId)}`, {
+              method: 'DELETE',
+              headers: {
+                'x-admin-pin': adminVerifiedPin || '1982',
+              },
+            });
+          }}
         />
       )}
       {/* Modal de Inicio de Sesión / OTP por WhatsApp al dar Comenzar */}
@@ -5006,6 +5168,7 @@ export default function App() {
                   setLoginStep('phone');
                   setLoginPhoneNum('');
                   setLoginOtpCode('');
+                  setOtpHintMessage('');
                 }}
                 aria-label="Cerrar"
                 className="min-h-[36px] min-w-[36px] rounded-xl text-[var(--mute)] hover:text-[var(--ink)] flex items-center justify-center cursor-pointer"
@@ -5046,31 +5209,104 @@ export default function App() {
                 </div>
 
                 <button
-                  onClick={() => {
+                  disabled={isAuthBusy}
+                  onClick={async () => {
                     const phoneClean = loginPhoneNum.trim();
-                    if (!phoneClean || phoneClean.length < 6) {
+                    if (!phoneClean || phoneClean.replace(/\D/g, '').length < 6) {
                       say('Ingresa un número de teléfono válido.');
                       return;
                     }
-                    const fullPhone = `${loginCountryCode} ${phoneClean}`;
-                    const foundSub = (state.subscribers || []).find(
-                      (s: any) =>
-                        s.phone.replace(/\s+/g, '') === fullPhone.replace(/\s+/g, '')
-                    );
 
-                    if (foundSub && foundSub.status === 'pendiente') {
-                      say('Tu pago está pendiente de aprobación por el administrador.');
-                      return;
+                    setIsAuthBusy(true);
+                    try {
+                      const res = await fetch('/api/auth/request-otp', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          countryCode: loginCountryCode,
+                          phoneNum: phoneClean,
+                          sessionToken,
+                        }),
+                      });
+                      const data = await res.json();
+
+                      if (!res.ok) {
+                        say(data.error || 'No se pudo iniciar sesión.');
+                        return;
+                      }
+
+                      if (data.mode === 'supabase') {
+                        if (data.skipOtp && data.profile) {
+                          setActiveProfile(data.profile);
+                          setShowLoginModal(false);
+                          setLoginStep('phone');
+                          setLoginPhoneNum('');
+                          setLoginOtpCode('');
+                          setState((prev: any) => ({
+                            ...prev,
+                            ...(data.progressData || {}),
+                            subscribers: prev.subscribers,
+                            view: 'hoy',
+                            hasStarted: true,
+                          }));
+                          window.scrollTo(0, 0);
+                          say(`¡Bienvenido de nuevo, ${data.profile.name}!`);
+                          return;
+                        }
+
+                        setSimulatedOtp(data.devOtp || '');
+                        setOtpHintMessage(
+                          data.devOtp
+                            ? `Modo prueba (n8n pendiente): tu código es ${data.devOtp}`
+                            : 'Código enviado por WhatsApp. Válido por 10 minutos.'
+                        );
+                        setLoginStep('otp');
+                        say(
+                          data.whatsappSent
+                            ? 'Código OTP enviado a tu WhatsApp.'
+                            : 'Código OTP generado. Revisa el modal.'
+                        );
+                        return;
+                      }
+
+                      // Fallback local cuando Supabase aún no tiene variables configuradas
+                      const fullPhone = `${loginCountryCode} ${phoneClean}`;
+                      const foundSub = (state.subscribers || []).find(
+                        (s: any) =>
+                          s.phone.replace(/\s+/g, '') ===
+                          fullPhone.replace(/\s+/g, '')
+                      );
+
+                      if (foundSub && foundSub.status === 'pendiente') {
+                        say('Tu pago está pendiente de aprobación por el administrador.');
+                        return;
+                      }
+
+                      const generated = String(
+                        Math.floor(100000 + Math.random() * 900000)
+                      );
+                      setSimulatedOtp(generated);
+                      setOtpHintMessage(
+                        `Modo local: el código temporal es ${generated}`
+                      );
+                      setLoginStep('otp');
+                      say(`Código OTP local: ${generated}`);
+                    } catch {
+                      const generated = String(
+                        Math.floor(100000 + Math.random() * 900000)
+                      );
+                      setSimulatedOtp(generated);
+                      setOtpHintMessage(
+                        `Sin conexión al servidor · código local: ${generated}`
+                      );
+                      setLoginStep('otp');
+                    } finally {
+                      setIsAuthBusy(false);
                     }
-
-                    const generated = String(Math.floor(100000 + Math.random() * 900000));
-                    setSimulatedOtp(generated);
-                    setLoginStep('otp');
-                    say(`(Simulación Evolution API) Código OTP enviado por WhatsApp: ${generated}`);
                   }}
-                  className="w-full min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-xl cursor-pointer hover:opacity-95 transition"
+                  className="w-full min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-xl cursor-pointer hover:opacity-95 disabled:opacity-60 transition"
                 >
-                  Enviar código por WhatsApp
+                  {isAuthBusy ? 'Verificando...' : 'Enviar código por WhatsApp'}
                 </button>
               </div>
             ) : (
@@ -5081,6 +5317,7 @@ export default function App() {
                   </label>
                   <input
                     type="text"
+                    inputMode="numeric"
                     maxLength={6}
                     value={loginOtpCode}
                     onChange={(e) => setLoginOtpCode(e.target.value)}
@@ -5088,37 +5325,105 @@ export default function App() {
                     className="text-center font-bold text-xl tracking-widest tabular-nums"
                     autoFocus
                   />
-                  <p className="text-[11px] text-[var(--mute)] mt-1.5 text-center">
-                    (Simulación: el código enviado es <strong className="text-[var(--acc)]">{simulatedOtp}</strong>)
-                  </p>
+                  {otpHintMessage && (
+                    <p className="text-[11px] text-[var(--mute)] mt-1.5 text-center">
+                      {otpHintMessage}
+                    </p>
+                  )}
                 </div>
 
                 <div className="flex gap-2.5">
                   <button
-                    onClick={() => {
-                      if (loginOtpCode.trim() !== simulatedOtp) {
-                        say('Código OTP incorrecto.');
+                    disabled={isAuthBusy}
+                    onClick={async () => {
+                      const codeClean = loginOtpCode.trim();
+                      if (!codeClean) {
+                        say('Ingresa el código de 6 dígitos.');
                         return;
                       }
 
-                      setShowLoginModal(false);
-                      setLoginStep('phone');
-                      setLoginPhoneNum('');
-                      setLoginOtpCode('');
-                      setState((prev: any) => ({
-                        ...prev,
-                        view: 'hoy',
-                        hasStarted: true,
-                      }));
-                      window.scrollTo(0, 0);
-                      say('¡Bienvenido! Perfil cargado correctamente.');
+                      setIsAuthBusy(true);
+                      try {
+                        if (cloudStatus.supabaseConfigured) {
+                          const res = await fetch('/api/auth/verify-otp', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              countryCode: loginCountryCode,
+                              phoneNum: loginPhoneNum.trim(),
+                              code: codeClean,
+                              deviceLabel: navigator.userAgent.slice(0, 60),
+                            }),
+                          });
+                          const data = await res.json();
+                          if (!res.ok) {
+                            say(data.error || 'Código OTP incorrecto.');
+                            return;
+                          }
+                          if (data.sessionToken) {
+                            setSessionToken(data.sessionToken);
+                            try {
+                              localStorage.setItem(
+                                SESSION_TOKEN_KEY,
+                                data.sessionToken
+                              );
+                            } catch {
+                              // Ignore storage errors
+                            }
+                          }
+                          if (data.profile) {
+                            setActiveProfile(data.profile);
+                          }
+                          setShowLoginModal(false);
+                          setLoginStep('phone');
+                          setLoginPhoneNum('');
+                          setLoginOtpCode('');
+                          setOtpHintMessage('');
+                          setState((prev: any) => ({
+                            ...prev,
+                            ...(data.progressData || {}),
+                            subscribers: prev.subscribers,
+                            view: 'hoy',
+                            hasStarted: true,
+                          }));
+                          window.scrollTo(0, 0);
+                          say('¡Bienvenido! Sesión activa por 7 días.');
+                          return;
+                        }
+
+                        if (codeClean !== simulatedOtp) {
+                          say('Código OTP incorrecto.');
+                          return;
+                        }
+
+                        setShowLoginModal(false);
+                        setLoginStep('phone');
+                        setLoginPhoneNum('');
+                        setLoginOtpCode('');
+                        setOtpHintMessage('');
+                        setState((prev: any) => ({
+                          ...prev,
+                          view: 'hoy',
+                          hasStarted: true,
+                        }));
+                        window.scrollTo(0, 0);
+                        say('¡Bienvenido! Perfil cargado correctamente.');
+                      } catch {
+                        say('Error de red al verificar el código.');
+                      } finally {
+                        setIsAuthBusy(false);
+                      }
                     }}
-                    className="flex-1 min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-xl cursor-pointer hover:opacity-95 transition"
+                    className="flex-1 min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-xl cursor-pointer hover:opacity-95 disabled:opacity-60 transition"
                   >
-                    Verificar e ingresar
+                    {isAuthBusy ? 'Validando...' : 'Verificar e ingresar'}
                   </button>
                   <button
-                    onClick={() => setLoginStep('phone')}
+                    onClick={() => {
+                      setLoginStep('phone');
+                      setLoginOtpCode('');
+                      setOtpHintMessage('');
+                    }}
                     className="min-h-[48px] px-4 border border-[var(--line)] font-bold text-xs rounded-xl cursor-pointer hover:border-[var(--acc)] transition"
                   >
                     Reenviar
