@@ -1,8 +1,3 @@
-import { createRequire } from 'node:module';
-
-const require = createRequire(import.meta.url);
-const webpush = require('web-push') as typeof import('web-push');
-
 export interface VapidConfig {
   publicKey: string;
   privateKey: string;
@@ -29,6 +24,19 @@ export function getVapidConfig(): VapidConfig {
     subject,
     configured: Boolean(publicKey && privateKey),
   };
+}
+
+let cachedWebPush: any = null;
+
+async function resolveWebPush(): Promise<any> {
+  if (cachedWebPush) return cachedWebPush;
+  try {
+    const mod = await import('web-push');
+    cachedWebPush = (mod as any).default || mod;
+    return cachedWebPush;
+  } catch (err) {
+    throw new Error(`No se pudo cargar el modulo web-push: ${String(err)}`);
+  }
 }
 
 export async function sendWebPushNotification(
@@ -58,8 +66,11 @@ export async function sendWebPushNotification(
   }
 
   try {
-    webpush.setVapidDetails(cfg.subject, cfg.publicKey, cfg.privateKey);
-    const result = await webpush.sendNotification(
+    const wp = await resolveWebPush();
+    if (typeof wp.setVapidDetails === 'function') {
+      wp.setVapidDetails(cfg.subject, cfg.publicKey, cfg.privateKey);
+    }
+    const result = await wp.sendNotification(
       {
         endpoint: subscription.endpoint,
         keys: {
