@@ -35,8 +35,9 @@ export type PaymentMethod =
   | 'Transferencia'
   | 'Tarjeta'
   | 'Efectivo'
+  | 'Prueba 7 días'
   | 'Por definir';
-export type PaymentStatus = 'pagado' | 'pendiente' | 'reembolsado';
+export type PaymentStatus = 'pagado' | 'pendiente' | 'trial' | 'reembolsado';
 
 export interface PaymentEntry {
   id: number;

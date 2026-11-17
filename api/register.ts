@@ -1,9 +1,11 @@
 import {
   PLAN_PRICES_PEN,
+  generateSessionToken,
   getSupabaseAdmin,
   mapDbProfileToSubscriber,
   normalizePhoneE164,
   parseJsonBody,
+  sha256,
   triggerN8nWhatsApp,
 } from './_lib/supabaseAdmin.js';
 
@@ -35,20 +37,29 @@ export default async function handler(req: any, res: any) {
     const supabase = getSupabaseAdmin();
 
     if (!supabase) {
+      const sessionToken = 'local-trial-session-' + Date.now();
       return res.status(200).json({
         ok: true,
         mode: 'local',
+        sessionToken,
         whatsappSent: false,
+        profile: {
+          id: Date.now(),
+          name,
+          phone: phone.formatted,
+          plan,
+          status: 'activo',
+        },
         subscriber: {
           id: Date.now(),
           name,
           phone: phone.formatted,
           city,
-          status: 'pendiente',
+          status: 'activo',
           plan,
           amount: amountPen,
-          paymentMethod: 'Por definir',
-          paymentStatus: 'pendiente',
+          paymentMethod: 'Prueba 7 días',
+          paymentStatus: 'trial',
           date: new Date().toISOString().slice(0, 10),
           payments: [],
         },
@@ -65,7 +76,7 @@ export default async function handler(req: any, res: any) {
       return res.status(500).json({ ok: false, error: fetchErr.message });
     }
 
-    if (existing && existing.status === 'activo') {
+    if (existing && existing.status === 'activo' && existing.payment_status === 'pagado') {
       return res.status(409).json({
         ok: false,
         error:
@@ -86,7 +97,7 @@ export default async function handler(req: any, res: any) {
           city,
           plan,
           amount_pen: amountPen,
-          status: existing.status === 'activo' ? 'activo' : 'activo',
+          status: 'activo',
           payment_status: existing.payment_status === 'pagado' ? 'pagado' : 'trial',
           trial_ends_at: existing.trial_ends_at || trialEndsAt,
         })
@@ -124,6 +135,19 @@ export default async function handler(req: any, res: any) {
       profile = inserted;
     }
 
+    // Crear sesión de 7 días para acceso inmediato sin fricción
+    const sessionToken = generateSessionToken();
+    const sessionExpiresAt = new Date(
+      Date.now() + 7 * 24 * 60 * 60 * 1000
+    ).toISOString();
+
+    await supabase.from('user_sessions').insert({
+      profile_id: profile.id,
+      session_token_hash: sha256(sessionToken),
+      device_label: 'Web PWA (Trial 7 Días)',
+      expires_at: sessionExpiresAt,
+    });
+
     const messagePreview = `¡Hola ${name}! Tu prueba gratuita de 7 días en HOY ya está activa. Disfruta de tu sistema de ejecución diaria (Plan ${plan}). ¡A por tu día!`;
 
     const waResult = await triggerN8nWhatsApp(supabase, {
@@ -139,7 +163,15 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({
       ok: true,
       mode: 'supabase',
+      sessionToken,
       whatsappSent: waResult.sent,
+      profile: {
+        id: profile.id,
+        name: profile.name,
+        phone: phone.formatted,
+        plan: profile.plan,
+        status: profile.status,
+      },
       subscriber: mapDbProfileToSubscriber(profile, []),
     });
   } catch (err: any) {

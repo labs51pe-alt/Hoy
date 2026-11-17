@@ -49,6 +49,7 @@ import AdminCrmModal, {
   SubscriberRecord,
 } from './components/AdminCrmModal';
 import ProgressReportModal from './components/ProgressReportModal';
+import PurposeLandingModal from './components/PurposeLandingModal';
 import {
   registerWebPushSubscription,
   sendTestWebPush,
@@ -992,7 +993,8 @@ export default function App() {
   const [orgPriorityTask, setOrgPriorityTask] = useState('');
   const [orgPriorityTime, setOrgPriorityTime] = useState('');
 
-  // Estados para Inscripción (Hazte socio) y CRM Admin secreto (3 clicks en logo)
+  // Estados para Inscripción (Hazte socio), Landing de Propósito y CRM Admin secreto
+  const [showPurposeModal, setShowPurposeModal] = useState(false);
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showAdminCrmModal, setShowAdminCrmModal] = useState<boolean>(() => {
@@ -2420,7 +2422,7 @@ export default function App() {
                   window.scrollTo(0, 0);
                   say(`¡Hola de nuevo, ${activeProfile.name}!`);
                 } else {
-                  setShowLoginModal(true);
+                  setShowPurposeModal(true);
                 }
               }}
               className={`w-full min-h-[54px] px-6 rounded-2xl font-extrabold text-base flex items-center justify-between transition cursor-pointer shadow-xl border ${
@@ -2440,24 +2442,46 @@ export default function App() {
             </motion.button>
 
             <button
-              onClick={() => setShowRegisterModal(true)}
-              className="w-full min-h-[54px] px-5 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white font-extrabold text-sm sm:text-base flex items-center justify-between gap-3 transition active:scale-[0.98] cursor-pointer shadow-xl shadow-amber-500/25 border border-white/20"
+              onClick={() => setShowPurposeModal(true)}
+              className={`w-full min-h-[56px] px-4 sm:px-5 py-2.5 rounded-2xl border text-sm font-extrabold flex items-center justify-between gap-3 transition active:scale-[0.98] cursor-pointer shadow-xl ${
+                isDark
+                  ? 'bg-gradient-to-r from-[#15803D] to-[#0F766E] hover:from-[#166534] hover:to-[#115E59] text-white border-[#4ADE80]/35 shadow-black/35'
+                  : 'bg-gradient-to-r from-[#15803D] to-[#0F766E] hover:from-[#166534] hover:to-[#115E59] text-white border-white/30 shadow-black/25'
+              }`}
             >
               <div className="flex items-center gap-3 min-w-0">
-                <span className="w-9 h-9 rounded-xl bg-white/22 flex items-center justify-center shrink-0 shadow-sm">
-                  <Sparkles className="w-5 h-5 text-white animate-pulse" />
+                <span className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center shrink-0 shadow-sm">
+                  <Sparkles className="w-5 h-5 text-white" />
                 </span>
                 <div className="text-left min-w-0">
-                  <div className="text-xs sm:text-sm font-black tracking-wide uppercase text-white truncate">
+                  <div className="text-xs sm:text-sm font-black tracking-tight leading-snug text-white">
                     ¡Regístrate, comienza hoy es gratis!
                   </div>
-                  <div className="text-[11px] font-bold text-white/90">
+                  <div className="text-[11px] font-medium text-white/85">
                     7 días de prueba sin compromiso
                   </div>
                 </div>
               </div>
               <ArrowRight className="w-4 h-4 text-white shrink-0" />
             </button>
+
+            <div className="pt-2 flex items-center justify-center gap-3 text-xs">
+              <button
+                type="button"
+                onClick={() => setShowPurposeModal(true)}
+                className="text-white/80 hover:text-white underline underline-offset-4 font-semibold cursor-pointer transition"
+              >
+                ¿Cómo funciona HOY? Conoce el propósito
+              </button>
+              <span className="text-white/40">•</span>
+              <button
+                type="button"
+                onClick={() => setShowLoginModal(true)}
+                className="text-white/80 hover:text-white underline underline-offset-4 font-semibold cursor-pointer transition"
+              >
+                Iniciar sesión
+              </button>
+            </div>
           </footer>
         </motion.div>
       ) : (
@@ -5328,13 +5352,28 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+      {/* Landing Modal Explicativa de Propósito (inspirada en la estructura de alta conversión) */}
+      <PurposeLandingModal
+        isOpen={showPurposeModal}
+        onClose={() => setShowPurposeModal(false)}
+        onOpenRegister={() => {
+          setShowPurposeModal(false);
+          setShowRegisterModal(true);
+        }}
+        onOpenLogin={() => {
+          setShowPurposeModal(false);
+          setShowLoginModal(true);
+        }}
+        isDark={isDark}
+      />
+
       {/* Modal Formulario de Inscripción ("Hazte socio") */}
       {showRegisterModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-3 sm:p-4 overflow-y-auto">
           <motion.div
             initial={{ opacity: 0, scale: 0.96 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="w-full max-w-md rounded-3xl bg-[var(--card)] text-[var(--ink)] p-6 sm:p-7 shadow-2xl border border-[var(--line)] space-y-5"
+            className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-3xl bg-[var(--card)] text-[var(--ink)] p-5 sm:p-7 shadow-2xl border border-[var(--line)] space-y-4 sm:space-y-5 my-auto"
           >
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -5467,15 +5506,16 @@ export default function App() {
                     name,
                     phone,
                     city: city || 'No especificada',
-                    status: 'pendiente',
+                    status: 'activo',
                     plan: regPlan,
                     amount: planAmount,
-                    paymentMethod: 'Por definir',
-                    paymentStatus: 'pendiente',
+                    paymentMethod: 'Prueba 7 días',
+                    paymentStatus: 'trial',
                     date: ymd(new Date()),
                     payments: [],
                   };
                   let whatsappSent = false;
+                  let regResponseData: any = null;
 
                   try {
                     const res = await fetch('/api/register', {
@@ -5490,28 +5530,27 @@ export default function App() {
                       }),
                     });
                     const rawText = await res.text();
-                    let data: any = null;
                     try {
-                      data = rawText ? JSON.parse(rawText) : null;
+                      regResponseData = rawText ? JSON.parse(rawText) : null;
                     } catch {
-                      data = null;
+                      regResponseData = null;
                     }
-                    if (!res.ok || !data) {
+                    if (!res.ok || !regResponseData) {
                       const snippet =
-                        !data && rawText && !rawText.trim().startsWith('<')
+                        !regResponseData && rawText && !rawText.trim().startsWith('<')
                           ? ` (${rawText.trim().slice(0, 90)})`
                           : '';
                       say(
-                        data?.error ||
+                        regResponseData?.error ||
                           `Error del servidor (${res.status}) al registrar.${snippet}`
                       );
                       setIsRegBusy(false);
                       return;
                     }
-                    if (data.subscriber) {
-                      createdSub = data.subscriber;
+                    if (regResponseData.subscriber) {
+                      createdSub = regResponseData.subscriber;
                     }
-                    whatsappSent = Boolean(data.whatsappSent);
+                    whatsappSent = Boolean(regResponseData.whatsappSent);
                   } catch {
                     say('No se pudo conectar con el servidor (/api/register).');
                     setIsRegBusy(false);
@@ -5543,7 +5582,28 @@ export default function App() {
                   setRegPhoneNum('');
                   setRegCity('');
                   setRegPlan('Vitalicio');
-                  setShowPaymentModal(true);
+
+                  if (regResponseData?.sessionToken && regResponseData?.profile) {
+                    try {
+                      localStorage.setItem(SESSION_TOKEN_KEY, regResponseData.sessionToken);
+                      localStorage.setItem(PROFILE_ID_KEY, String(regResponseData.profile.id));
+                    } catch {}
+                    setSessionToken(regResponseData.sessionToken);
+                    setActiveProfile(regResponseData.profile);
+                    setState((prev: any) => ({
+                      ...prev,
+                      view: 'hoy',
+                      hasStarted: true,
+                    }));
+                    window.scrollTo(0, 0);
+                    say(
+                      `¡Bienvenido a HOY, ${
+                        regResponseData.profile.name.split(' ')[0]
+                      }! Tu prueba de 7 días está activa.`
+                    );
+                  } else {
+                    setShowPaymentModal(true);
+                  }
                 }}
                 className="flex-1 min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-extrabold text-sm rounded-xl cursor-pointer hover:opacity-95 disabled:opacity-60 transition"
               >
@@ -5556,56 +5616,82 @@ export default function App() {
                 Cancelar
               </button>
             </div>
+
+            <div className="text-center pt-0.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRegisterModal(false);
+                  setShowPurposeModal(true);
+                }}
+                className="text-xs text-[var(--mute)] hover:text-[var(--acc)] underline underline-offset-4 cursor-pointer font-medium"
+              >
+                ¿Quieres saber más? Conoce los 4 pilares y el propósito de HOY
+              </button>
+            </div>
           </motion.div>
         </div>
       )}
 
-      {/* Modal Información de Pago */}
+      {/* Modal Información de Pago / Bienvenida Prueba 7 Días */}
       {showPaymentModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-3 sm:p-4 overflow-y-auto">
           <motion.div
             initial={{ opacity: 0, scale: 0.96 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="w-full max-w-md rounded-3xl bg-[var(--card)] text-[var(--ink)] p-6 sm:p-7 shadow-2xl border border-[var(--line)] space-y-5"
+            className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-3xl bg-[var(--card)] text-[var(--ink)] p-5 sm:p-7 shadow-2xl border border-[var(--line)] space-y-4 sm:space-y-5 my-auto"
           >
             <div className="flex items-start gap-3.5">
-              <div className="w-12 h-12 rounded-2xl bg-[var(--ok)]/15 text-[var(--ok)] flex items-center justify-center shrink-0">
+              <div className="w-12 h-12 rounded-2xl bg-[#15803D]/15 text-[#15803D] dark:text-[#4ADE80] flex items-center justify-center shrink-0">
                 <CheckCircle2 className="w-6 h-6" />
               </div>
               <div>
-                <span className="text-xs font-extrabold uppercase text-[var(--ok)] tracking-wider">
-                  ¡Registro exitoso!
+                <span className="text-xs font-extrabold uppercase text-[#15803D] dark:text-[#4ADE80] tracking-wider">
+                  ¡Prueba de 7 días activa!
                 </span>
                 <h3 className="text-lg font-extrabold tracking-tight mt-0.5">
-                  Instrucciones de pago
+                  Bienvenido a HOY
                 </h3>
                 <p className="text-xs text-[var(--mute)] mt-1 leading-relaxed">
                   {lastRegSummary.whatsappSent
-                    ? 'Te hemos enviado los detalles a tu WhatsApp. Realiza tu pago mediante los siguientes métodos:'
-                    : 'Guarda estas instrucciones de pago y envía tu comprobante por WhatsApp:'}
+                    ? 'Te hemos enviado la confirmación y el recordatorio a tu WhatsApp. Disfruta de la app completa por 7 días sin costo.'
+                    : 'Tu acceso gratuito por 7 días está en marcha. Comienza a ganar tu día ahora mismo.'}
                 </p>
               </div>
             </div>
 
-            <div className="rounded-2xl border border-[var(--line)] bg-[var(--bg)] p-4 space-y-2 text-xs">
-              <p className="font-bold text-[var(--ink)]">💳 Yape / Plin / Transferencia:</p>
-              <p className="font-mono font-bold text-[var(--acc)]">+51 999 888 777 (Titular: HOY App)</p>
-              <p className="font-bold text-[var(--ink)] pt-1">💵 Monto:</p>
-              <p className="font-bold text-[var(--ink)]">
-                S/ {lastRegSummary.amount.toFixed(2)} PEN (Plan {lastRegSummary.plan})
-              </p>
-            </div>
-
-            <p className="text-[11px] text-[var(--mute)] italic">
-              * Una vez realizado el pago, envíanos tu comprobante y el administrador activará tu acceso a tu WhatsApp.
-            </p>
-
             <button
-              onClick={() => setShowPaymentModal(false)}
-              className="w-full min-h-[48px] bg-[var(--acc)] text-[var(--accink)] font-bold text-sm rounded-xl cursor-pointer hover:opacity-95 transition"
+              onClick={() => {
+                setShowPaymentModal(false);
+                setState((prev: any) => ({
+                  ...prev,
+                  view: 'hoy',
+                  hasStarted: true,
+                }));
+                window.scrollTo(0, 0);
+              }}
+              className="w-full min-h-[50px] bg-gradient-to-r from-[#15803D] to-[#0F766E] hover:from-[#166534] hover:to-[#115E59] text-white font-extrabold text-sm rounded-xl cursor-pointer shadow-lg transition"
             >
-              Entendido, volver a la app
+              Comenzar a usar HOY ahora
             </button>
+
+            <details className="rounded-2xl border border-[var(--line)] bg-[var(--bg)] p-3.5 text-xs text-[var(--mute)] space-y-2">
+              <summary className="font-extrabold cursor-pointer select-none text-[var(--ink)] flex items-center justify-between">
+                <span>💳 ¿Cómo renovar tras los 7 días?</span>
+                <span className="text-[11px] font-normal text-[var(--mute)]">Ver datos</span>
+              </summary>
+              <div className="pt-2 border-t border-[var(--line)]/60 space-y-1.5 mt-2">
+                <p className="font-bold text-[var(--ink)]">Yape / Plin / Transferencia:</p>
+                <p className="font-mono font-bold text-[var(--acc)]">+51 999 888 777 (Titular: HOY App)</p>
+                <p className="font-bold text-[var(--ink)] pt-1">Monto de tu plan:</p>
+                <p className="font-bold text-[var(--ink)]">
+                  S/ {lastRegSummary.amount.toFixed(2)} PEN (Plan {lastRegSummary.plan})
+                </p>
+                <p className="text-[11px] italic text-[var(--mute)]">
+                  * Sin cobros automáticos ni sorpresas. Si decides quedarte tras los 7 días de prueba, envías tu comprobante por WhatsApp.
+                </p>
+              </div>
+            </details>
           </motion.div>
         </div>
       )}
